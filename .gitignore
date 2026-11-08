@@ -9,3 +9,6 @@ selftest/transcripts/
 selftest-run*.log
 selftest-run*.out
 selftest-final.out
+
+# Graphify
+graphify-out/
