@@ -9,3 +9,6 @@ selftest/transcripts/
 selftest-run*.log
 selftest-run*.out
 selftest-final.out
+
+# Grafo local de graphify (índice para asistentes; no se versiona)
+graphify-out/
