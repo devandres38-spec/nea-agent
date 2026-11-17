@@ -77,7 +77,8 @@ def test_sin_zona_del_crm_queda_la_de_la_instancia(contexto):
 
 
 def test_sin_zona_ni_respaldo_queda_la_de_siempre():
-    assert zona_del_negocio(None) == CDMX
+    # vocero-crm 068: la de siempre es la de Colombia.
+    assert zona_del_negocio(None) == BOGOTA
 
 
 # ── Lo que lee el modelo ──────────────────────────────────────────────────
@@ -143,17 +144,19 @@ def test_sin_agenda_no_se_habla_de_horarios():
 
 
 async def test_el_turno_arma_el_prompt_con_la_zona_del_negocio(ctx, client, respx_mock):
-    assert ctx.settings.agent_timezone == "America/Mexico_City"
+    # vocero-crm 068: la instancia está en Bogotá por defecto; un negocio de
+    # México atendido por esta misma Nea tiene que ver SU hora, no la nuestra.
+    assert ctx.settings.agent_timezone == "America/Bogota"
     routes = mock_crm_basics(respx_mock)
     routes["context"].mock(
-        return_value=httpx.Response(200, json=_contexto_de("America/Bogota"))
+        return_value=httpx.Response(200, json=_contexto_de("America/Mexico_City"))
     )
     await despachar(client, ctx, text="¿tienes en la mañana?")
     await asyncio.sleep(0.25)
 
     system = ctx.llm.calls[0]["messages"][0]["content"]
-    assert "(hora de Colombia)" in system
-    assert "centro de México" not in system
+    assert "(hora del centro de México)" in system
+    assert "hora de Colombia" not in system
 
 
 async def test_sin_zona_del_crm_el_turno_usa_la_de_la_instancia(ctx, client, respx_mock):
@@ -162,7 +165,7 @@ async def test_sin_zona_del_crm_el_turno_usa_la_de_la_instancia(ctx, client, res
     await asyncio.sleep(0.25)
 
     system = ctx.llm.calls[0]["messages"][0]["content"]
-    assert "(hora del centro de México)" in system
+    assert "(hora de Colombia)" in system
 
 
 async def test_el_seguimiento_tambien_usa_la_zona_del_negocio(respx_mock):
@@ -170,7 +173,7 @@ async def test_el_seguimiento_tambien_usa_la_zona_del_negocio(respx_mock):
     ctx.llm.replies = [LlmReply(content="¿Seguimos donde nos quedamos?")]
     await preparar_conversacion(ctx)
     respx_mock.get(f"{CRM_URL}/api/bot/context").mock(
-        return_value=httpx.Response(200, json=_contexto_de("America/Bogota"))
+        return_value=httpx.Response(200, json=_contexto_de("America/Mexico_City"))
     )
     respx_mock.post(f"{CRM_URL}/api/bot/messages").mock(
         return_value=httpx.Response(200, json={"messageId": "m1"})
@@ -178,8 +181,8 @@ async def test_el_seguimiento_tambien_usa_la_zona_del_negocio(respx_mock):
     await FollowupWorker(ctx).tick()
 
     system = ctx.llm.calls[0]["messages"][0]["content"]
-    assert "(hora de Colombia)" in system
-    assert "centro de México" not in system
+    assert "(hora del centro de México)" in system
+    assert "hora de Colombia" not in system
     await ctx.crm.aclose()
 
 
@@ -189,8 +192,9 @@ async def test_el_seguimiento_tambien_usa_la_zona_del_negocio(respx_mock):
 async def test_el_dia_de_un_hueco_se_cuenta_en_la_zona_del_negocio(respx_mock):
     """Un CRM que ignora `date` y no manda `dayIso`: el día lo deduce Nea.
 
-    05:30 UTC del 15 son las 07:30 del 15 en Madrid y las 23:30 del 14 en
-    CDMX. Para un negocio de Madrid ese hueco ES del día 15.
+    04:30 UTC del 15 son las 06:30 del 15 en Madrid y las 23:30 del 14 en
+    Bogotá (la zona de la instancia). Para un negocio de Madrid ese hueco ES
+    del día 15.
     """
     ctx = make_ctx()
     conv = await ctx.store.get_or_create_conversation(IDENTITY)
@@ -200,10 +204,10 @@ async def test_el_dia_de_un_hueco_se_cuenta_en_la_zona_del_negocio(respx_mock):
             json={
                 "slots": [
                     {
-                        "startUtc": "2026-10-15T05:30:00.000Z",
-                        "label": "jue 15 oct, 07:30",
+                        "startUtc": "2026-10-15T04:30:00.000Z",
+                        "label": "jue 15 oct, 06:30",
                         "dayLabel": "jueves 15 de octubre",
-                        "time": "07:30",
+                        "time": "06:30",
                     }
                 ]
             },
@@ -211,7 +215,7 @@ async def test_el_dia_de_un_hueco_se_cuenta_en_la_zona_del_negocio(respx_mock):
     )
     madrid = ToolRuntime(ctx, conv, CRM_CONV_ID, tz=ZoneInfo("Europe/Madrid"))
     result = await madrid.execute("propose_slots", {"fecha": "2026-10-15"})
-    assert result["horas_que_veo_de_ese_dia"] == ["07:30"]
+    assert result["horas_que_veo_de_ese_dia"] == ["06:30"]
 
     de_la_instancia = ToolRuntime(ctx, conv, CRM_CONV_ID)
     result = await de_la_instancia.execute("propose_slots", {"fecha": "2026-10-15"})

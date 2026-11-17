@@ -16,11 +16,12 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import json
+from app.config import ZONA_POR_DEFECTO
 from app.profile import BusinessProfile
 from app.state import Conversation, OfferedSlot
 from app.tools import etapas_siguientes
 
-DEFAULT_TZ = ZoneInfo("America/Mexico_City")
+DEFAULT_TZ = ZoneInfo(ZONA_POR_DEFECTO)
 
 
 def zona_del_negocio(context: dict | None, respaldo: ZoneInfo | None = None) -> ZoneInfo:

@@ -12,6 +12,11 @@ from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+# Zona IANA de respaldo de toda la Nea (vocero-crm 068: Colombia por defecto).
+# La de cada negocio la manda el CRM; `AGENT_TIMEZONE` la cambia por instancia.
+ZONA_POR_DEFECTO = "America/Bogota"
+
+
 def canonical_identity(wa_id: str) -> str:
     """Canonicaliza una identidad de WhatsApp para comparaciones.
 
@@ -77,7 +82,7 @@ class Settings(BaseSettings):
     agent_name: str = "Nea"  # se usa si el CRM no define nombre
     # IANA. Respaldo: la zona de cada negocio la manda el CRM con sus citas
     # (`zona_del_negocio`); esta solo cuenta si el CRM no la dice.
-    agent_timezone: str = "America/Mexico_City"
+    agent_timezone: str = ZONA_POR_DEFECTO
     brief_path: str = ""  # markdown local, fallback si el CRM no tiene perfil
 
     # LLM

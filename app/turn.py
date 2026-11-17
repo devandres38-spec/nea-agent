@@ -18,7 +18,7 @@ from zoneinfo import ZoneInfo
 
 from app import media
 from app.agenda import agenda_vigente
-from app.config import canonical_identity
+from app.config import ZONA_POR_DEFECTO, canonical_identity
 from app.crm import CrmConflict, CrmError, CrmUnreachable
 from app.formato import a_whatsapp
 from app.hostility import ALERT as HOSTILITY_ALERT, hostile_streak
@@ -58,11 +58,11 @@ RESET_COMMANDS = frozenset({"/reset", "#reset"})
 
 def _agent_tz(settings: Any) -> ZoneInfo:
     try:
-        return ZoneInfo(getattr(settings, "agent_timezone", "") or "America/Mexico_City")
+        return ZoneInfo(getattr(settings, "agent_timezone", "") or ZONA_POR_DEFECTO)
     except Exception:
-        logger.warning("AGENT_TIMEZONE inválida %r — uso America/Mexico_City",
-                       getattr(settings, "agent_timezone", None))
-        return ZoneInfo("America/Mexico_City")
+        logger.warning("AGENT_TIMEZONE inválida %r — uso %s",
+                       getattr(settings, "agent_timezone", None), ZONA_POR_DEFECTO)
+        return ZoneInfo(ZONA_POR_DEFECTO)
 
 
 @asynccontextmanager
