@@ -25,6 +25,7 @@ from app.crm import (
     SlotNotOffered,
     SlotTaken,
 )
+from app.config import ZONA_POR_DEFECTO
 from app.dias import nombra_un_dia
 from app.profile import BusinessProfile
 from app.state import AppContext, Conversation, OfferedSlot
@@ -497,15 +498,15 @@ def _slots_from_payload(
 
 
 def _zona_del_negocio(ctx: AppContext) -> ZoneInfo:
-    """La zona de AGENT_TIMEZONE, o CDMX si no es válida.
+    """La zona de AGENT_TIMEZONE, o la de respaldo (Bogotá) si no es válida.
 
     Es el respaldo: el turno le pasa a `ToolRuntime` la zona que el CRM manda
     para ese negocio (`zona_del_negocio`, app/prompt.py).
     """
     try:
-        return ZoneInfo(getattr(ctx.settings, "agent_timezone", "") or "America/Mexico_City")
+        return ZoneInfo(getattr(ctx.settings, "agent_timezone", "") or ZONA_POR_DEFECTO)
     except Exception:
-        return ZoneInfo("America/Mexico_City")
+        return ZoneInfo(ZONA_POR_DEFECTO)
 
 
 def _slots_for_llm(slots: list[OfferedSlot]) -> list[dict[str, str]]:
