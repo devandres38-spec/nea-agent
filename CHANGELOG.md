@@ -8,6 +8,14 @@ Qué cambia en cada versión de Nea y qué hacer al actualizar. Cada tag
 
 ### Corregido
 
+- **Un negocio reasignado ya no tumba a los demás de la misma Nea**
+  (auditoría de vocero-crm 070, C-1). En `multiorg`, un `401`/`403` de
+  `/api/brains/*` (credencial reasignada, cerebro pausado, secreto rotado o
+  negocio suspendido) sube como `CrmRechazo` y es TERMINAL: el despacho sale
+  de la cola durable sin pedir handoff y sin reintentar. Antes se quedaba en
+  bucle cada 2 s, y cada 401 sumaba al límite por IP del CRM que comparten
+  todos los negocios de la Nea, hasta dejarlos a todos en 429. Pruebas en
+  `tests/test_brains_rechazo.py`.
 - **En cloud el agente no movía etapas** (vocero-crm 070, D3).
   `BrainsCrmClient` no mapeaba `/api/bot/stage`, así que `move_stage` salía a
   esa ruta, que en un Vocero multitenant responde 404. Ahora sale por
