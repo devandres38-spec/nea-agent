@@ -6,6 +6,19 @@ Qué cambia en cada versión de Nea y qué hacer al actualizar. Cada tag
 
 ## Sin publicar
 
+### Corregido
+
+- **En cloud el agente no movía etapas** (vocero-crm 070, D3).
+  `BrainsCrmClient` no mapeaba `/api/bot/stage`, así que `move_stage` salía a
+  esa ruta, que en un Vocero multitenant responde 404. Ahora sale por
+  `/api/brains/stage`. Requiere vocero-crm 2.10.0 (que la publica); contra uno
+  anterior, mover etapa falla igual que antes y el turno sigue.
+- **Contrato gemelo con vocero-crm 2.10.0** (`tests/test_brains_gemelo.py`):
+  credencial derivada, cuerpo del despacho en modo plataforma (con
+  `expiresAt`) y del `conversation.deleted` con sus firmas, y las rutas de
+  `BrainsCrmClient`, copiados byte a byte de
+  `tests/unit/cerebros-070-gemelo.test.ts` del CRM.
+
 ### Nuevo
 
 - **Varios profesionales con un número** (vocerocrm-cloud 233). Cuando el CRM

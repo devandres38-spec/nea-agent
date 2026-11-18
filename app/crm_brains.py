@@ -48,6 +48,9 @@ RUTAS = {
     "/api/bot/ficha": "/api/brains/ficha",
     "/api/bot/handoff": "/api/brains/handoff",
     "/api/bot/typing": "/api/brains/typing",
+    # vocero-crm 070 (D3): sin esta línea `move_stage` salía a `/api/bot/stage`,
+    # que en un Vocero multitenant responde 404 — el agente nunca movía etapas.
+    "/api/bot/stage": "/api/brains/stage",
     "/api/bot/availability": "/api/brains/agenda/slots",
     "/api/bot/bookings": "/api/brains/agenda/book",
 }
