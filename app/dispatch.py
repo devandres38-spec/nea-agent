@@ -27,6 +27,7 @@ from typing import Any
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
+from app.crm import CrmRechazo
 from app.multiorg import organizacion_del_despacho
 from app.http_limits import limited_body
 from app.state import AppContext, InboundMessage
@@ -403,6 +404,10 @@ async def _a_humano(cliente: Any, conversation_id: str, motivo: str) -> None:
     """
     try:
         await cliente.post_handoff(conversation_id, motivo)
+    except CrmRechazo:
+        # C-1: la credencial ya no vale; sube tal cual y la cola lo trata como
+        # terminal (sin otro handoff ni reintento). No es un fallo de código.
+        raise
     except Exception:
         logger.exception("no pude marcar %s para humano", conversation_id)
         raise

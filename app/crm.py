@@ -29,6 +29,23 @@ class CrmError(Exception):
     """Fallo genérico hablando con el CRM (red, 5xx, 401...)."""
 
 
+class CrmRechazo(CrmError):
+    """vocero-crm 070 (C-1) — El CRM rechazó la CREDENCIAL de esta organización.
+
+    `401` (la credencial derivada ya no vale: reasignada, desasignada, cerebro
+    pausado o secreto rotado) o `403` (`organizacion_suspendida`). No es
+    pasajero ni se arregla reintentando: con esa credencial NADA va a pasar
+    —tampoco el handoff—, y cada intento cuenta como un fallo en el límite por
+    IP del CRM, que comparten TODOS los negocios de esta Nea. Es terminal: se
+    registra y el despacho sale de la cola.
+    """
+
+    def __init__(self, status: int, code: str = "") -> None:
+        super().__init__(f"el CRM rechazó la credencial ({status}{' ' + code if code else ''})")
+        self.status = status
+        self.code = code
+
+
 class CrmUnreachable(CrmError):
     """El CRM no contestó: red caída, timeout, 5xx o 429.
 
