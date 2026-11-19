@@ -85,6 +85,6 @@ CONTEXTO ACTUAL:
 - Nombre del lead: Gerardo.
 - Etapa en el pipeline: Nuevo.
 - Ficha actual del lead: {"tipo_evento": "Boda"}
-- Datos por reunir (uno a la vez, en este orden, sin repetir lo que ya te dijo; nunca condiciones una cita ni una cotización a ellos): Fecha del evento, Número de invitados, Ciudad.
+- Datos por reunir (uno a la vez, en este orden, sin repetir lo que ya te dijo; nunca condiciones una cita ni una cotización a ellos): ["Fecha del evento", "Número de invitados", "Ciudad"].
 - El lead llegó desde el anuncio: "Limpieza dental 2x1".
 - El lead NO tiene ninguna cita por delante. Esto manda sobre el historial: aunque ahí aparezca una cita confirmada o su enlace, YA NO está vigente. Si pregunta si sigue en pie, la respuesta es NO: dile que no la ves en la agenda y ofrécele agendar otra. NUNCA la confirmes y NUNCA inventes el motivo: nada de "no quedó guardada", "hubo una falla" ni "por alguna razón".

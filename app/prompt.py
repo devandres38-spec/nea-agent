@@ -466,7 +466,10 @@ def build_system_prompt(
         )
     # vocero-crm 072 (D11) — Los obligatorios del negocio que faltan (máx. 3):
     # solo con esquema y con la ficha encendida. Sin esquema, ni una letra.
-    por_reunir = linea_datos_por_reunir(context) if profile.permite("ficha") else None
+    # B-5 (auditoría 072-A) — La misma doble llave que expone `update_ficha`
+    # (perfil Y rol): no se piden datos que el agente no puede guardar.
+    ficha_activa = profile.permite("ficha") and rol_de(profile.role).permite("ficha")
+    por_reunir = linea_datos_por_reunir(context) if ficha_activa else None
     if por_reunir:
         lines.append(por_reunir)
 

@@ -12,6 +12,7 @@ tumban el turno. El CRM ya valida al guardar; esto es el segundo candado.
 from __future__ import annotations
 
 import copy
+import json
 import logging
 import re
 from typing import Any
@@ -25,7 +26,12 @@ TOPE_OPCIONES = 30
 TOPE_DESCRIPCION = 200
 # Cuántos datos pendientes se le recuerdan al modelo a la vez (D11).
 TOPE_FALTANTES = 3
-RESERVADAS = {"notas"}
+RESERVADAS = {"notas", "constructor", "prototype"}
+# M-9 (auditoría 072-A) — Presupuesto del esquema dinámico (caracteres del JSON
+# de propiedades, ~2k tokens): si el negocio lo excede, se usan los primeros
+# campos que caben (en su orden) y se avisa en el log.
+TOPE_ESQUEMA_CHARS = 8000
+_SUFIJO_FECHA = " (AAAA-MM-DD)"
 
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]+")
 
@@ -67,8 +73,14 @@ def campos_del_contexto(context: dict[str, Any] | None) -> list[dict[str, Any]]:
         if descripcion:
             campo["description"] = descripcion
         if tipo == "select":
-            opciones = [_linea(o, 60) for o in (c.get("options") or []) if isinstance(o, str)]
-            opciones = [o for o in opciones if o][:TOPE_OPCIONES]
+            # A-8 (auditoría 072-A) — `options` debe ser una LISTA: un int/bool
+            # tumbaba el turno (TypeError) y un str se iteraba letra por letra.
+            # Y sin repetidas: `"enum": ["A", "A"]` no es un JSON Schema válido.
+            crudas = c.get("options")
+            if not isinstance(crudas, list):
+                crudas = []
+            opciones = [_linea(o, 60) for o in crudas if isinstance(o, str)]
+            opciones = list(dict.fromkeys(o for o in opciones if o))[:TOPE_OPCIONES]
             if not opciones:
                 logger.warning("fichaSchema: lista %s sin opciones, se descarta", clave)
                 continue
@@ -88,7 +100,9 @@ def _propiedad(campo: dict[str, Any]) -> dict[str, Any]:
     if tipo == "boolean":
         return {"type": "boolean", "description": descripcion[:TOPE_DESCRIPCION]}
     if tipo == "date":
-        return {"type": "string", "description": f"{descripcion} (AAAA-MM-DD)"[: TOPE_DESCRIPCION + 13]}
+        # A-8 — Se recorta la descripción, nunca el formato: el modelo necesita
+        # ver «(AAAA-MM-DD)» aunque la etiqueta y la indicación sean largas.
+        return {"type": "string", "description": f"{descripcion[:TOPE_DESCRIPCION]}{_SUFIJO_FECHA}"}
     if tipo == "select":
         return {"type": "string", "enum": list(campo["options"]), "description": descripcion[:TOPE_DESCRIPCION]}
     return {"type": "string", "description": descripcion[:TOPE_DESCRIPCION]}
@@ -106,7 +120,15 @@ def esquema_dinamico(base: dict[str, Any], context: dict[str, Any] | None) -> di
         "campos que mandes). Llámala en cuanto descubras un dato nuevo. Usa "
         "estos campos, con su tipo; lo que no encaje en ninguno, en notas."
     )
-    propiedades = {c["key"]: _propiedad(c) for c in campos}
+    propiedades: dict[str, Any] = {}
+    for c in campos:
+        prop = _propiedad(c)
+        if len(json.dumps({**propiedades, c["key"]: prop}, ensure_ascii=False)) > TOPE_ESQUEMA_CHARS:
+            logger.warning(
+                "fichaSchema excede %d caracteres: se usan los primeros %d campos", TOPE_ESQUEMA_CHARS, len(propiedades)
+            )
+            break
+        propiedades[c["key"]] = prop
     propiedades["notas"] = {"type": "string", "description": "Otro dato útil que no encaja en los campos"}
     funcion["parameters"] = {"type": "object", "properties": propiedades}
     return esquema
@@ -129,7 +151,9 @@ def linea_datos_por_reunir(context: dict[str, Any] | None) -> str | None:
     pendientes = faltantes(context)
     if not pendientes:
         return None
-    nombres = ", ".join(c["label"] for c in pendientes)
+    # M-9 (auditoría 072-A) — Las etiquetas las escribe el negocio: van como
+    # DATOS delimitados (una lista JSON), nunca como texto suelto del prompt.
+    nombres = json.dumps([c["label"] for c in pendientes], ensure_ascii=False)
     return (
         "- Datos por reunir (uno a la vez, en este orden, sin repetir lo que ya "
         "te dijo; nunca condiciones una cita ni una cotización a ellos): "

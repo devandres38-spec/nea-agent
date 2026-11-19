@@ -17,6 +17,12 @@ Qué cambia en cada versión de Nea y qué hacer al actualizar. Cada tag
   una cita. Con la ficha apagada para el negocio, no aparece.
 - **Ignorados.** Si el CRM descarta un valor por su tipo (`ignored`), el
   modelo lo sabe y repregunta una vez.
+- **Auditoría 072-A.** Un `options` que no es lista ya no tumba el turno (ni
+  se itera letra por letra) y el `enum` sale sin repetidas; el sufijo
+  `(AAAA-MM-DD)` de una fecha nunca se recorta; `constructor` y `prototype`
+  quedan reservadas; las etiquetas de «Datos por reunir» van como lista JSON
+  (datos, no texto del prompt) y el esquema dinámico tiene presupuesto de
+  8 000 caracteres; la línea exige la ficha en el perfil **y** en el rol.
 - Actualizar: redesplegar. Contra un CRM 2.11 nada cambia.
 
 ### Producción (vocero-crm 071, Ronda 1)
