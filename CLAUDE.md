@@ -24,7 +24,7 @@ idempotentes al arranque · httpx (CRM y OpenAI) · pytest + respx · Docker
 | El contrato con el CRM | `app/crm.py` (espejo del bot gateway de vocero) · prueba gemela del despacho en `tests/test_despacho_raiz.py` |
 | La entrada (despacho del CRM, los dos modos) | `app/dispatch.py` · cola durable `app/dispatch_store.py` + `app/dispatch_worker.py` |
 | Con qué piensa (llave propia o la del CRM por `/api/bot/llm`) | `app/llm.py` (`LlmPorElCrm`) · elección al arranque en `app/main.py` (`_llm_del_arranque`) |
-| Vocero multitenant (modo cloud) | `app/crm_brains.py` (salida por `/api/brains/*`) |
+| Vocero multitenant (modo cloud) | `app/crm_brains.py` (salida por `/api/brains/*`) · prueba gemela con vocero-crm 070 en `tests/test_brains_gemelo.py` |
 | Atender a VARIOS negocios a la vez | `app/multiorg.py` |
 | El ensayo: el dueño prueba a su agente sin WhatsApp (cloud) | `app/ensayo.py` — el turno de siempre sobre un CRM que solo lee y una memoria que muere con la petición |
 | El webhook de Meta que ya no se recibe (503) | `app/webhook_retirado.py` |

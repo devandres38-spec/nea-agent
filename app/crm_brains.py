@@ -29,6 +29,7 @@ from app.crm import (
     CrmClient,
     CrmConflict,
     CrmError,
+    CrmRechazo,
     CrmUnreachable,
     _404_de_agenda,
     es_caida,
@@ -48,6 +49,9 @@ RUTAS = {
     "/api/bot/ficha": "/api/brains/ficha",
     "/api/bot/handoff": "/api/brains/handoff",
     "/api/bot/typing": "/api/brains/typing",
+    # vocero-crm 070 (D3): sin esta línea `move_stage` salía a `/api/bot/stage`,
+    # que en un Vocero multitenant responde 404 — el agente nunca movía etapas.
+    "/api/bot/stage": "/api/brains/stage",
     "/api/bot/availability": "/api/brains/agenda/slots",
     "/api/bot/bookings": "/api/brains/agenda/book",
 }
@@ -164,6 +168,9 @@ class BrainsCrmClient(CrmClient):
         contexto. Sin esto habria que pedir el contexto dos veces por
         despacho — una para las credenciales y otra dentro del turno.
         """
+        # Un 401/403 sube como `CrmRechazo` (terminal, C-1): ni handoff ni
+        # reintento. Cualquier otro fallo devuelve None y el despacho pasa a
+        # una persona, como siempre.
         resp = await self._request(
             "GET", "/api/bot/context", params={"conversationId": conversation_id, "contextVersion": "2"}
         )
@@ -190,14 +197,20 @@ class BrainsCrmClient(CrmClient):
         """
         return self._llm
 
-    def _request(self, method: str, url: str, **kwargs: Any):  # type: ignore[override]
+    async def _request(self, method: str, url: str, **kwargs: Any) -> httpx.Response:  # type: ignore[override]
         ruta = RUTAS.get(url, url)
         if ruta == url:
             for origen, destino in RUTAS_POR_PREFIJO.items():
                 if url.startswith(origen):
                     ruta = destino + url.removeprefix(origen)
                     break
-        return super()._request(method, ruta, **kwargs)
+        resp = await super()._request(method, ruta, **kwargs)
+        # vocero-crm 070 (C-1): un 401/403 es el CRM diciendo que ESTA
+        # credencial no vale (reasignada, pausada, rotada, negocio suspendido).
+        # Se corta aquí para que nadie lo trate como un fallo más y reintente.
+        if resp.status_code in (401, 403):
+            raise CrmRechazo(resp.status_code, _conflict_code(resp) if resp.status_code == 403 else "")
+        return resp
 
     async def send_message(
         self, conversation_id: str, text: str, dispatch_id: str = ""
@@ -313,6 +326,7 @@ class BrainsCrmClient(CrmClient):
                 **extra,
             )
         except CrmError:
+            # Incluye `CrmRechazo`: sin credencial válida no se puede concluir.
             return None
         if resp.status_code >= 500:
             return None
