@@ -194,6 +194,7 @@ def create_app(ctx: AppContext | None = None) -> FastAPI:
                     settings.crm_brain_secret,
                     nombre_por_defecto=settings.agent_name,
                     brief_path=settings.brief_path or None,
+                    agenda_ttl=settings.agenda_probe_ttl_seconds,
                 )
                 crm = CrmSinOrganizacion()
             elif settings.cloud_mode:
@@ -241,7 +242,12 @@ def create_app(ctx: AppContext | None = None) -> FastAPI:
                 "/api/bot/llm) con el modelo que diga su perfil"
             )
 
-        if own_resources:
+        if own_resources and c.settings.multi_org:
+            # 071 (D5): en multi-organización la agenda es de cada negocio
+            # (`agent.agendaEnabled` del contexto, o su propia sonda). Una
+            # global aquí la compartirían todos.
+            logger.info("agenda: por negocio (contexto del CRM o sonda por organización)")
+        elif own_resources:
             # ¿Este CRM agenda? Vocero trae el motor detrás de una bandera de
             # despliegue y viene apagado por defecto. Se pregunta aquí, en vez
             # de descubrirlo lead por lead, para que el primero que escriba ya

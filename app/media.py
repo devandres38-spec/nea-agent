@@ -38,6 +38,15 @@ _AUDIO_EXT = {
 }
 
 
+# 071 (D12): el marcador de una imagen que el modelo SÍ va a ver, y el que lo
+# reemplaza cuando el modelo del negocio resulta no ver imágenes.
+IMAGEN_ADJUNTA = "la tienes adjunta, puedes verla."
+IMAGEN_SIN_VISION = (
+    "pero por aquí no puedes ver imágenes. Con honestidad: dile que no "
+    "alcanzas a verla y pídele que te cuente qué muestra."
+)
+
+
 @dataclass
 class MediaPart:
     """Render de un ítem multimedia para el turno."""
@@ -100,7 +109,7 @@ async def _image(ctx: AppContext, msg: InboundMessage) -> MediaPart:
     mime_clean = (mime or msg.media_mime or "image/jpeg").split(";")[0].strip()
     uri = f"data:{mime_clean};base64,{base64.b64encode(data).decode()}"
     return MediaPart(
-        text=f"[El lead mandó una imagen — la tienes adjunta, puedes verla.{caption}]",
+        text=f"[El lead mandó una imagen — {IMAGEN_ADJUNTA}{caption}]",
         image_data_uri=uri,
     )
 

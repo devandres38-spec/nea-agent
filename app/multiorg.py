@@ -51,6 +51,7 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
+from app.agenda import SondaDeAgenda
 from app.crm_brains import BrainsCrmClient
 from app.llm import OpenAiLlm
 from app.profile import ProfileProvider
@@ -104,6 +105,9 @@ class RegistroDeOrganizaciones:
     # transporte es el compartido.
     MAX_LLMS = 256
 
+    # Sondas de agenda por negocio: una por organización vista (son pocas).
+    MAX_SONDAS = 4096
+
     def __init__(
         self,
         base_url: str,
@@ -111,6 +115,7 @@ class RegistroDeOrganizaciones:
         *,
         nombre_por_defecto: str = "Nea",
         brief_path: str | None = None,
+        agenda_ttl: float = 60.0,
     ) -> None:
         self._base_url = base_url
         self._secreto = secreto_despliegue
@@ -125,6 +130,8 @@ class RegistroDeOrganizaciones:
         # cambia de modelo, la tupla cambia y el siguiente turno ya usa el
         # cliente nuevo sin que nadie tenga que invalidar nada.
         self._llms: OrderedDict[tuple[str, str, str, str], OpenAiLlm] = OrderedDict()
+        self._agenda_ttl = agenda_ttl
+        self._sondas: OrderedDict[str, SondaDeAgenda] = OrderedDict()
 
     def cliente(self, organization_id: str, slug: str) -> BrainsCrmClient:
         """Un cliente del CRM para UN turno de esa organización."""
@@ -135,6 +142,25 @@ class RegistroDeOrganizaciones:
             client=self._http,
             compartido=True,
         )
+
+    def sonda(self, organization_id: str, slug: str) -> SondaDeAgenda:
+        """071 (D5) — La sonda de agenda de ESE negocio.
+
+        Antes era una para toda la Nea, preguntando con el centinela (siempre
+        «sí»), así que solo cambiaba cuando una herramienta de CUALQUIER
+        negocio chocaba con un 404: uno apagaba la agenda de todos durante el
+        TTL. Ahora cada negocio tiene la suya, con su credencial. Con un CRM
+        que dice `agendaEnabled` en el contexto casi no se usa (respaldo).
+        """
+        sonda = self._sondas.get(organization_id)
+        if sonda is None:
+            sonda = SondaDeAgenda(self.cliente(organization_id, slug), ttl=self._agenda_ttl)
+            self._sondas[organization_id] = sonda
+            while len(self._sondas) > self.MAX_SONDAS:
+                self._sondas.popitem(last=False)
+        else:
+            self._sondas.move_to_end(organization_id)
+        return sonda
 
     def perfil(self, cliente: BrainsCrmClient) -> ProfileProvider:
         """El perfil de ESTE turno: lo lee del contexto que trajo su cliente.

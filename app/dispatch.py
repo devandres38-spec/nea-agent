@@ -386,6 +386,9 @@ async def _contexto_multiorg(
         llm=registro.llm(org_id, slug, config_ia, ctx.settings),
         profile=registro.perfil(cliente),
         organizacion=(org_id, slug),
+        # 071 (D5): la agenda de ESTE negocio, no la de la instancia.
+        agenda_sonda=registro.sonda(org_id, slug),
+        agenda_enabled=True,
     )
 
 

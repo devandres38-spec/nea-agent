@@ -27,6 +27,42 @@ class LlmExhausted(Exception):
     """El LLM falló todos los reintentos — el turno debe degradar en silencio."""
 
 
+class ImagenNoSoportada(LlmExhausted):
+    """vocero-crm 071 (D12) — El modelo de este negocio no acepta imágenes.
+
+    Hereda de `LlmExhausted` para que quien no la conozca degrade como
+    siempre; el turno la atiende antes: quita la imagen, avisa con honestidad
+    y vuelve a pensar UNA vez, sin handoff `error`.
+    """
+
+
+# Cómo dicen los proveedores «este modelo no ve». Reintentar no lo cambia:
+# antes eran 3 intentos, silencio y handoff `error` por mandar una foto.
+_SIN_VISION = (
+    "support image input",
+    "image input is not supported",
+    "image_url is only supported",
+    "does not support image",
+    "doesn't support image",
+    "image inputs are not supported",
+    "vision is not supported",
+    "model does not support images",
+)
+
+
+def _es_sin_vision(exc: Exception) -> bool:
+    texto = str(exc).lower()
+    return any(p in texto for p in _SIN_VISION)
+
+
+def tiene_imagenes(messages: list[dict[str, Any]]) -> bool:
+    return any(
+        isinstance(m.get("content"), list)
+        and any(isinstance(p, dict) and p.get("type") == "image_url" for p in m["content"])
+        for m in messages
+    )
+
+
 @dataclass
 class ToolCall:
     id: str
@@ -128,6 +164,9 @@ class OpenAiLlm:
         self._reasoning_effort = reasoning_effort.strip()
         self._provider_sort = provider_sort.strip()
         self._extras_ok = True
+        # 071 (D12) — ¿El modelo ve imágenes? Se aprende del primer rechazo y
+        # es pegajoso, como `_extras_ok`: el soporte no cambia a media vida.
+        self._vision_ok = True
         # Con proveedor propio (OpenRouter y compañía) no hay endpoint de
         # transcripción: el audio se manda DENTRO del chat, a un modelo que
         # sepa oír. Se decide aquí y no en cada llamada para que el camino sea
@@ -282,6 +321,8 @@ class OpenAiLlm:
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
     ) -> LlmReply:
+        if not self._vision_ok and tiene_imagenes(messages):
+            raise ImagenNoSoportada(f"{self._model} no acepta imágenes (ya se sabía)")
         last_error: Exception | None = None
         for attempt in range(self.RETRIES + 1):
             try:
@@ -308,6 +349,10 @@ class OpenAiLlm:
                 last_error = ValueError("respuesta vacía del LLM (sin content ni tools)")
                 logger.warning("llm: respuesta vacía, intento %d", attempt + 1)
             except Exception as exc:  # red, API, parseo — todo reintenta
+                if tiene_imagenes(messages) and _es_sin_vision(exc):
+                    self._vision_ok = False
+                    logger.warning("llm: %s no acepta imágenes — sin reintentos", self._model)
+                    raise ImagenNoSoportada(str(exc)) from exc
                 last_error = exc
                 self._quiza_por_los_extras(exc)
                 logger.warning("llm: fallo en intento %d: %s", attempt + 1, exc)

@@ -59,6 +59,10 @@ class BusinessProfile:
     # brief local): Nea usa `LLM_MODEL`.
     llm_path: str | None = None
     llm_model: str | None = None
+    # 071 (D5) — ¿Este negocio agenda? Lo dice el CRM en el contexto
+    # (`agent.agendaEnabled`, módulo agenda del negocio). `None` = no lo dice
+    # (un CRM anterior, `single`): manda la sonda, como siempre.
+    agenda_enabled: bool | None = None
 
     def permite(self, clave: str) -> bool:
         """¿Está encendida esta herramienta? `escalar` siempre lo está: es la
@@ -94,6 +98,9 @@ def profile_from_payload(payload: dict[str, Any], default_name: str) -> Business
         resources=resources,
         role=str(prof.get("role") or "calificador"),
         tools=_herramientas(prof.get("tools")),
+        agenda_enabled=(
+            prof["agendaEnabled"] if isinstance(prof.get("agendaEnabled"), bool) else None
+        ),
         **_ia(payload.get("llm")),
     )
 

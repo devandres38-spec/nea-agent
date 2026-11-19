@@ -72,6 +72,10 @@ class SondaDeAgenda:
                 await self._sondear()
         return self.valor
 
+    def apagada_por_404(self) -> bool:
+        """¿Una herramienta chocó con el 404 de la bandera y sigue vigente?"""
+        return self._generacion > 0 and not self.valor and not self._caducada()
+
     def marcar_apagada(self) -> None:
         """Una herramienta recibió el 404 de la bandera: apagada hasta el TTL."""
         self._generacion += 1
@@ -116,13 +120,23 @@ class SondaDeAgenda:
         return await self._crm.agenda_available()
 
 
-async def agenda_vigente(ctx: Any) -> bool:
-    """¿Agenda en ESTE turno? La sonda si hay; si no, lo fijado en el contexto.
+async def agenda_vigente(ctx: Any, perfil: Any | None = None) -> bool:
+    """¿Agenda en ESTE turno?
 
-    Las pruebas que arman el contexto a mano no traen sonda, y ahí manda
-    `ctx.agenda_enabled` tal cual lo dejaron.
+    1. Lo que dice el CRM en el contexto del negocio (`agent.agendaEnabled`,
+       vocero-crm 071): sin sonda, sin TTL, sin peticiones de más. Salvo que
+       en este mismo TTL una herramienta haya chocado con el 404 de la
+       bandera: eso manda hasta que la sonda vuelva a preguntar.
+    2. La sonda (la de ESE negocio en multiorg; la de la instancia en single).
+    3. Lo fijado en el contexto: las pruebas que lo arman a mano no traen
+       sonda, y ahí manda `ctx.agenda_enabled` tal cual lo dejaron.
     """
     sonda = getattr(ctx, "agenda_sonda", None)
+    dicho = getattr(perfil, "agenda_enabled", None)
+    if isinstance(dicho, bool):
+        if dicho and sonda is not None and sonda.apagada_por_404():
+            return False
+        return dicho
     if sonda is None:
         return bool(ctx.agenda_enabled)
     return await sonda.vigente()

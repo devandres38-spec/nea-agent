@@ -22,7 +22,7 @@ from app.config import ZONA_POR_DEFECTO, canonical_identity
 from app.crm import CrmConflict, CrmError, CrmUnreachable
 from app.formato import a_whatsapp
 from app.hostility import ALERT as HOSTILITY_ALERT, hostile_streak
-from app.llm import LlmExhausted
+from app.llm import ImagenNoSoportada, LlmExhausted
 from app.stall import (
     ALERTA as STALL_ALERT,
     FICHA_CIERRE,
@@ -382,10 +382,11 @@ async def run_turn(
     # ¿El CRM agenda HOY? La respuesta caduca (app/agenda.py): si venció, este
     # turno la vuelve a pedir, con timeout corto. Así encender AGENDA en el
     # CRM llega sin reiniciar Nea, y un 404 de la bandera no apaga para siempre.
-    ctx.agenda_enabled = await agenda_vigente(ctx)
     referral = next((m.referral_headline for m in inbound if m.referral_headline), None)
     offered = await ctx.store.get_offered_slots(conv.id)
     profile = await resolve_profile(ctx)
+    # 071 (D5): lo que diga el CRM de ESTE negocio; si no lo dice, la sonda.
+    ctx.agenda_enabled = await agenda_vigente(ctx, profile)
     # 034 — Con «agendar» apagada en el CRM, el turno se porta como contra un
     # CRM sin agenda: no se le enseñan las herramientas y el prompt dice que
     # por aquí no se agenda.
@@ -444,9 +445,12 @@ async def run_turn(
         )
         messages.append({"role": "system", "content": STALL_ALERT})
     if image_uris:
-        # El último user message de este turno se vuelve multimodal: el
-        # historial persiste solo el texto; las imágenes viven en ESTE turno.
-        last = messages[-1]
+        # El último mensaje DEL LEAD se vuelve multimodal: el historial
+        # persiste solo el texto; las imágenes viven en ESTE turno. Al último
+        # `user`, no a `messages[-1]` (071, FR-010): con una alerta de
+        # hostilidad o de cierre ese es un `system`, y una imagen en un
+        # `system` la rechazan los proveedores — el turno entero fallaba.
+        last = _ultimo_del_lead(messages)
         last["content"] = [{"type": "text", "text": str(last["content"])}] + [
             {"type": "image_url", "image_url": {"url": uri}} for uri in image_uris
         ]
@@ -463,7 +467,15 @@ async def run_turn(
         profesionales=profesionales_del_contexto(context),
     )
     try:
-        final_text = await _tool_loop(ctx, messages, runtime)
+        try:
+            final_text = await _tool_loop(ctx, messages, runtime)
+        except ImagenNoSoportada as exc:
+            # 071 (D12): el modelo de este negocio no ve. Sin handoff `error`:
+            # se quita la imagen, el marcador dice la verdad y se piensa UNA
+            # vez más. Si eso también falla, es el camino de siempre.
+            logger.warning("turno %s: el modelo no ve imágenes (%s) — sigo sin ellas", identity, exc)
+            _sin_imagenes(messages)
+            final_text = await _tool_loop(ctx, messages, runtime)
     except LlmExhausted as exc:
         logger.error(
             "turno %s: LLM agotó reintentos (%s) — silencio + handoff error",
@@ -836,6 +848,29 @@ async def _safe_handoff(
     # Queda anotado para que la red de seguridad no registre otro encima.
     if turno is not None:
         turno.handoff = reason
+
+
+def _ultimo_del_lead(messages: list[dict[str, Any]]) -> dict[str, Any]:
+    """El último mensaje `user` del prompt (el que trae la ráfaga del turno)."""
+    for m in reversed(messages):
+        if m.get("role") == "user":
+            return m
+    nuevo: dict[str, Any] = {"role": "user", "content": ""}
+    messages.append(nuevo)
+    return nuevo
+
+
+def _sin_imagenes(messages: list[dict[str, Any]]) -> None:
+    """Quita las imágenes del prompt y corrige el marcador que las anunciaba."""
+    for m in messages:
+        contenido = m.get("content")
+        if not isinstance(contenido, list):
+            continue
+        texto = "\n".join(
+            str(p.get("text") or "") for p in contenido
+            if isinstance(p, dict) and p.get("type") == "text"
+        )
+        m["content"] = texto.replace(media.IMAGEN_ADJUNTA, media.IMAGEN_SIN_VISION)
 
 
 def _conversacion_reciente(history: list[BotMessage]) -> str:
