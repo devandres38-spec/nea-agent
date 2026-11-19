@@ -19,7 +19,7 @@ from zoneinfo import ZoneInfo
 from app import media
 from app.agenda import agenda_vigente
 from app.config import ZONA_POR_DEFECTO, canonical_identity
-from app.crm import CrmConflict, CrmError, CrmUnreachable
+from app.crm import CrmConflict, CrmError, CrmRechazo, CrmUnreachable
 from app.formato import formatear_para
 from app.hostility import ALERT as HOSTILITY_ALERT, hostile_streak
 from app.llm import ImagenNoSoportada, LlmExhausted
@@ -36,7 +36,6 @@ from app.roles import rol_de
 from app.state import AppContext, BotMessage, InboundMessage, utcnow
 from app.tools import (
     ToolRuntime,
-    con_mover_etapa,
     etapas_siguientes,
     profesionales_del_contexto,
     solo_encendidas,
@@ -198,6 +197,11 @@ async def handle_flush(
     try:
         async with conversation_lock(ctx, identity):
             await run_turn(ctx, identity, items, turno)
+    except CrmRechazo as exc:
+        if propagate_errors:
+            raise
+        # A-2: terminal; el handoff de emergencia tampoco pasaría.
+        logger.error("turno de %s: el CRM rechazó la credencial (%s) — silencio", identity, exc)
     except Exception:
         if propagate_errors:
             raise
@@ -295,34 +299,34 @@ async def run_turn(
     # mensaje con contenido la reabre en el acto —«¿cuánto cuesta?» merece
     # respuesta aunque llegue a los diez minutos— y, pasado el enfriamiento
     # (STALL_COOLDOWN_HOURS), la reabre cualquiera.
+    # Auditoría 071 (A-8): la reapertura se DECIDE aquí pero se hace tras la
+    # puerta 2 — una conversación en handoff o con la ventana cerrada no se
+    # toca —, y si esta puerta ya trajo el contexto (cloud), la 2 lo reusa.
+    reabrir_motivo: str | None = None
+    contexto_previo: dict[str, Any] | None = None
     if conv.stalled_at is not None:
         enfriando = utcnow() - conv.stalled_at < timedelta(
             hours=settings.stall_cooldown_hours
         )
-        if (
-            enfriando
-            and not any(trae_contenido(m.type, m.text) for m in inbound)
-            and await _cierre_sin_rumbo_activo(ctx, identity)
-        ):
-            logger.info(
-                "turno %s: relleno tras el cierre por falta de rumbo — silencio",
-                identity,
-            )
-            return
-        logger.info(
-            "turno %s: %s — reabro",
-            identity,
+        if enfriando and not any(trae_contenido(m.type, m.text) for m in inbound):
+            activo, contexto_previo = await _cierre_sin_rumbo_activo(ctx, identity)
+            if activo:
+                logger.info(
+                    "turno %s: relleno tras el cierre por falta de rumbo — silencio",
+                    identity,
+                )
+                return
+        reabrir_motivo = (
             "el lead escribió algo con contenido"
             if enfriando
-            else "el lead volvió tras el enfriamiento",
+            else "el lead volvió tras el enfriamiento"
         )
-        await _reabrir(ctx, conv, identity)
 
     # --- Gate 2: contexto del CRM (aiEnabled, ventana) --------------------
     # Un CRM que no contesta no es un «no»: la ráfaga se reintenta
     # (handle_flush). Solo el 404 de verdad termina en silencio.
     try:
-        context = await _fetch_context(ctx, identity)
+        context = contexto_previo or await _fetch_context(ctx, identity)
     except CrmUnreachable as exc:
         raise TurnoSinCrm(str(exc)) from exc
     if context is None:
@@ -341,6 +345,9 @@ async def run_turn(
         return
     # Sin despacho (el seguimiento) la conversación del CRM se conoce aquí.
     conv = await _olvidar_si_es_otra(ctx, conv, str(crm_conv_id), identity)
+    if reabrir_motivo is not None and conv.stalled_at is not None:
+        logger.info("turno %s: %s — reabro", identity, reabrir_motivo)
+        await _reabrir(ctx, conv, identity)
     # Desde aquí el turno es de Nea: si revienta, la red de seguridad de
     # handle_flush sabe a qué conversación del CRM avisarle.
     turno.crm_conversation_id = str(crm_conv_id)
@@ -475,6 +482,7 @@ async def run_turn(
         conversacion_reciente=_conversacion_reciente(history),
         etapas=etapas_siguientes(context),
         profesionales=profesionales_del_contexto(context),
+        context=context,
     )
     try:
         try:
@@ -582,22 +590,29 @@ def _stall_activo(profile: Any) -> bool:
     ).politica_sin_rumbo
 
 
-async def _cierre_sin_rumbo_activo(ctx: AppContext, identity: str) -> bool:
+async def _cierre_sin_rumbo_activo(
+    ctx: AppContext, identity: str
+) -> tuple[bool, dict[str, Any] | None]:
     """La puerta 1.5 solo calla rellenos si el negocio cierra sin rumbo.
 
     Corre antes del contexto, así que el perfil puede no estar: en cloud viaja
     CON el contexto, y se pide aquí (solo en este caso raro: conversación
-    cerrada + relleno durante el enfriamiento). Ante cualquier duda —el CRM no
-    contesta— se queda como siempre: callar.
+    cerrada + relleno durante el enfriamiento). Devuelve ese contexto para que
+    la puerta 2 no lo pida otra vez (A-8). Ante la duda —el CRM no contesta—
+    se queda como siempre: callar. Un `CrmRechazo` sube: es terminal.
     """
+    contexto: dict[str, Any] | None = None
     try:
         if getattr(ctx.settings, "cloud_mode", False):
-            if await _fetch_context(ctx, identity) is None:
-                return True
-        return _stall_activo(await resolve_profile(ctx))
+            contexto = await _fetch_context(ctx, identity)
+            if contexto is None:
+                return True, None
+        return _stall_activo(await resolve_profile(ctx)), contexto
+    except CrmRechazo:
+        raise
     except Exception as exc:
         logger.debug("turno %s: no pude leer si cierra sin rumbo (%s) — callo", identity, exc)
-        return True
+        return True, None
 
 
 async def _reabrir(ctx: AppContext, conv: Any, identity: str) -> None:
@@ -709,6 +724,8 @@ async def _fetch_context(ctx: AppContext, identity: str) -> dict[str, Any] | Non
         caida = None
         try:
             context = await ctx.crm.get_context(identity)
+        except CrmRechazo:
+            raise  # A-2: terminal; reintentar solo suma al límite del CRM
         except CrmUnreachable as exc:
             logger.warning(
                 "context de %s: el CRM no contestó (intento %d): %s",
@@ -794,14 +811,15 @@ async def _tool_loop(
     for _ in range(MAX_TOOL_ROUNDS):
         reply = await ctx.llm.complete(
             messages,
+            # A-7: el catálogo lleva el contexto del turno (`esquema_de_ficha`,
+            # `move_stage`) y sale del mismo registro que valida `execute`.
             tools=solo_encendidas(
-                con_mover_etapa(
-                    tool_schemas(
-                        ctx.agenda_enabled,
-                        bool(getattr(ctx.crm, "supports_agenda_v2", False)),
-                        bool(getattr(ctx.crm, "supports_coordination", False)),
-                    ),
-                    getattr(runtime, "etapas", []),
+                tool_schemas(
+                    ctx.agenda_enabled,
+                    bool(getattr(ctx.crm, "supports_agenda_v2", False)),
+                    bool(getattr(ctx.crm, "supports_coordination", False)),
+                    context=getattr(runtime, "contexto", None),
+                    etapas=list(getattr(runtime, "etapas", []) or []),
                 ),
                 getattr(runtime, "_profile", None),
             ),
@@ -854,6 +872,10 @@ async def _send(ctx: AppContext, conv_id: int, crm_conv_id: str, text: str) -> b
             # ai_paused / window_closed: silencio respetuoso, sin reintento.
             logger.info("envío bloqueado por el CRM (%s) — silencio", exc.code)
             return False
+        except CrmRechazo:
+            # A-2: la credencial ya no vale (negocio suspendido, rotado…). Ni
+            # reintento ni pending_send: con ella no va a salir nunca.
+            raise
         except CrmError as exc:
             logger.warning("envío falló (intento %d): %s", attempt + 1, exc)
             if attempt < SEND_ATTEMPTS - 1:

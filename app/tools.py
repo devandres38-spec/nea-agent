@@ -295,8 +295,14 @@ def etapas_siguientes(context: dict[str, Any] | None) -> list[str]:
 
 
 def con_mover_etapa(schemas: list[dict[str, Any]], etapas: list[str]) -> list[dict[str, Any]]:
-    """El catálogo del turno más `move_stage` si hay a dónde mover."""
-    return schemas + [MOVE_STAGE_SCHEMA] if etapas else schemas
+    """El catálogo del turno más `move_stage` si hay a dónde mover.
+
+    Desde la auditoría 071 (A-7) `tool_schemas(..., etapas=…)` ya la incluye;
+    esto queda por compatibilidad y no la duplica.
+    """
+    if not etapas or any(t.get("function", {}).get("name") == "move_stage" for t in schemas):
+        return schemas
+    return schemas + [MOVE_STAGE_SCHEMA]
 
 
 # Recordatorios de la cita: SOLO los manda la agenda v2 de Vocero Cloud. El
@@ -318,23 +324,25 @@ AGENDA_V2_SCHEMAS = [
     {"type": "function", "function": {"name": "cancel_session", "description": "Cancela la cita seleccionada SOLO después de confirmación explícita del cliente. Usa el selectionToken devuelto por list_bookings.", "parameters": {"type": "object", "properties": {"selection_token": {"type": "string"}, "confirmation": {"type": "boolean"}}, "required": ["selection_token", "confirmation"]}}},
 ]
 
-# Herramientas que solo tienen sentido si el CRM agenda.
-AGENDA_TOOLS = frozenset({"propose_slots", "book_session", "reschedule_session"})
+def __getattr__(nombre: str) -> Any:
+    """Auditoría 071 (A-7): sin constantes duplicadas del registro.
 
-# 034 — De qué clave del catálogo del CRM es cada herramienta. Una que no esté
-# aquí no se puede apagar desde el CRM.
-CLAVE_DE_HERRAMIENTA = {
-    "update_ficha": "ficha",
-    "move_stage": "etapa",
-    "propose_slots": "agendar",
-    "book_session": "agendar",
-    "list_bookings": "agendar",
-    "cancel_session": "agendar",
-    "coordination_consent": "agendar",
-    "reschedule_session": "reprogramar",
-    "route_out": "salida",
-    "handoff": "escalar",
-}
+    `CLAVE_DE_HERRAMIENTA` (de qué clave del catálogo del CRM es cada
+    herramienta) y `AGENDA_TOOLS` (las que solo existen si el CRM agenda) se
+    derivan de `app/herramientas/builtin.py`, la única fuente.
+    """
+    from app.herramientas.builtin import REGISTRO
+    from app.herramientas.registro import Capacidades
+
+    if nombre == "CLAVE_DE_HERRAMIENTA":
+        return {spec.nombre: spec.clave for spec in REGISTRO}
+    if nombre == "AGENDA_TOOLS":
+        return frozenset(
+            spec.nombre
+            for spec in REGISTRO
+            if spec.ofrecer(Capacidades(agenda=True)) and not spec.ofrecer(Capacidades(agenda=False))
+        )
+    raise AttributeError(nombre)
 
 
 def solo_encendidas(schemas: list[dict[str, Any]], profile: Any) -> list[dict[str, Any]]:
@@ -364,6 +372,7 @@ def tool_schemas(
     agenda_v2: bool = False,
     coordination: bool = False,
     context: dict[str, Any] | None = None,
+    etapas: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """El catálogo que se le ofrece al modelo en ESTE turno.
 
@@ -383,6 +392,7 @@ def tool_schemas(
             agenda_v2=agenda_v2,
             coordinacion=coordination,
             contexto=context,
+            etapas=tuple(etapas if etapas is not None else etapas_siguientes(context)),
         )
     )
 
@@ -535,8 +545,12 @@ class ToolRuntime:
         conversacion_reciente: str | None = None,
         etapas: list[str] | None = None,
         profesionales: list[dict[str, str]] | None = None,
+        context: dict[str, Any] | None = None,
     ) -> None:
         self._ctx = ctx
+        # Auditoría 071 (A-7): el contexto del turno, para el catálogo
+        # (`esquema_de_ficha`, la 072) y para validar lo que se ejecuta.
+        self.contexto = context
         # vocero-cloud 233 — con quién se puede agendar (`booking.agendas`).
         self.profesionales: list[dict[str, str]] = list(profesionales or [])
         # 038 — A qué etapas puede mover al lead (`lead.nextStages`).
@@ -561,17 +575,22 @@ class ToolRuntime:
         from app.herramientas.builtin import REGISTRO
         from app.herramientas.registro import Capacidades
 
-        caps = Capacidades(
-            agenda=True,
-            agenda_v2=bool(getattr(self._ctx.crm, "supports_agenda_v2", False)),
-            coordinacion=bool(getattr(self._ctx.crm, "supports_coordination", False)),
-        )
+        caps = self.capacidades()
         try:
             spec = REGISTRO.get(name)
-            if spec is not None and spec.ejecutable(caps):
-                return await spec.ejecutar(self, args)
-            logger.warning("tools: herramienta desconocida %r", name)
-            return {"ok": False, "error": f"herramienta desconocida: {name}"}
+            if spec is None or not spec.ejecutable(caps):
+                logger.warning("tools: herramienta desconocida %r", name)
+                return {"ok": False, "error": f"herramienta desconocida: {name}"}
+            if not self._permitida(spec, caps):
+                # A-7: el modelo (o una inyección) pidió una herramienta que no
+                # se le ofreció: apagada por el negocio o el rol, o sin agenda.
+                logger.warning("tools: %r no está permitida en este turno — no se ejecuta", name)
+                return {
+                    "ok": False,
+                    "error": "herramienta_no_disponible",
+                    "detalle": "esa acción no está disponible aquí; sigue sin ella o haz handoff",
+                }
+            return await spec.ejecutar(self, args)
         except CrmError as exc:
             logger.warning("tools: %s falló contra el CRM: %s", name, exc)
             return {
@@ -579,6 +598,28 @@ class ToolRuntime:
                 "error": "crm_error",
                 "detalle": "no pude completar la acción; continúa la conversación o haz handoff",
             }
+
+    def capacidades(self) -> Any:
+        """Lo que el CRM de este turno sabe hacer (y lo que el turno decidió)."""
+        from app.herramientas.registro import Capacidades
+
+        return Capacidades(
+            agenda=bool(getattr(self._ctx, "agenda_enabled", True)),
+            agenda_v2=bool(getattr(self._ctx.crm, "supports_agenda_v2", False)),
+            coordinacion=bool(getattr(self._ctx.crm, "supports_coordination", False)),
+            contexto=self.contexto,
+            etapas=tuple(self.etapas),
+        )
+
+    def _permitida(self, spec: Any, caps: Any) -> bool:
+        """Lo mismo que se le ofreció: capacidades ∩ perfil ∩ rol (A-7, D20)."""
+        from app.roles import rol_de
+
+        return bool(
+            spec.ofrecer(caps)
+            and self._profile.permite(spec.clave)
+            and rol_de(getattr(self._profile, "role", None)).permite(spec.clave)
+        )
 
     async def _update_ficha(self, args: dict[str, Any]) -> dict[str, Any]:
         # Tolera el drift del LLM: manda lo que haya, el CRM normaliza flojo.
@@ -943,6 +984,7 @@ class ToolRuntime:
         meeting_url, link_pending = _meeting(result)
         self.booking_confirmation = {
             "tipo": "book",
+            **self._instante_de(chosen),
             "label": chosen.label or result.get("label"),
             "meeting_url": meeting_url,
             "link_pending": link_pending,
@@ -969,6 +1011,15 @@ class ToolRuntime:
                 "cita SÍ quedó: di que el enlace le llega por aquí en un "
                 "momento, no prometas uno que no tienes"
             ),
+        }
+
+    def _instante_de(self, chosen: OfferedSlot) -> dict[str, str]:
+        """071 (A-5): la cita del guardarraíl sale del instante reservado y de
+        la zona del negocio, no de leer la etiqueta («mar» no es marzo)."""
+        return {
+            "start_utc": _iso_z(chosen.start_utc),
+            "tz": getattr(self._tz, "key", "") or ZONA_POR_DEFECTO,
+            "hoy": datetime.now(timezone.utc).astimezone(self._tz).date().isoformat(),
         }
 
     def finalize_reply(self, text: str) -> str:
@@ -1028,6 +1079,7 @@ class ToolRuntime:
         # 071 (D17): la cita movida también pasa por el guardarraíl.
         self.booking_confirmation = {
             "tipo": "reschedule",
+            **self._instante_de(chosen),
             "label": chosen.label or result.get("label"),
             "meeting_url": meeting_url,
             "link_pending": link_pending,

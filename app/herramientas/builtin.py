@@ -161,14 +161,13 @@ REGISTRO = Registro(
             ofrecer=lambda caps: _con_agenda_v2(caps) and caps.coordinacion,
             ejecutable=lambda caps: caps.coordinacion,
         ),
-        # 038 — Se ofrece aparte (`con_mover_etapa`): solo existe cuando el
-        # contexto trae a qué etapas moverlo.
+        # 038 — Solo existe cuando el contexto trae a qué etapas moverlo.
         ToolSpec(
             "move_stage",
             "etapa",
             lambda _caps: t.MOVE_STAGE_SCHEMA,
             _metodo("_move_stage"),
-            ofrecer=lambda _caps: False,
+            ofrecer=lambda caps: bool(caps.etapas),
         ),
     ]
 )

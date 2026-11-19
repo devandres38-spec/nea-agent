@@ -369,7 +369,7 @@ class PgStore(PgDispatchStore):
         return [_pending_send_desde_fila(r) for r in rows]
 
     async def claim_pending_sends(
-        self, now: datetime, limit: int = 50, lease_seconds: int = 120
+        self, now: datetime, limit: int = 10, lease_seconds: int = 180
     ) -> list[PendingSend]:
         """071 (D6) — Los vencidos, RESERVADOS para este worker.
 
@@ -378,10 +378,14 @@ class PgStore(PgDispatchStore):
         dos réplicas leerían las mismas filas. Se reservan empujando
         `next_retry_at` (un lease): la otra réplica ya no las ve vencidas, y si
         este proceso muere vuelven solas al vencer.
+
+        Auditoría 071 (A-3): el lease cuenta desde el MISMO `now` con que se
+        eligieron las filas (antes, `now()` de Postgres en el SET y el de
+        Python en el WHERE), y el lote es chico para caber en él.
         """
         rows = await self.pool.fetch(
             """
-            UPDATE pending_send SET next_retry_at = now() + make_interval(secs => $3)
+            UPDATE pending_send SET next_retry_at = $1 + make_interval(secs => $3)
             WHERE id IN (
               SELECT id FROM pending_send
               WHERE delivered_at IS NULL AND abandoned_at IS NULL AND next_retry_at <= $1

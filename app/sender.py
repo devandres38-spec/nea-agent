@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from datetime import datetime, timedelta
 
 from app.crm import CrmConflict, CrmError, CrmRechazo
@@ -19,6 +20,14 @@ from app.observabilidad import contexto_de_log
 from app.state import AppContext, PendingSend, utcnow
 
 logger = logging.getLogger("nea.sender")
+
+# Auditoría 071 (A-3): el lote cabe en su lease. Cada envío puede tardar hasta
+# 15 s (timeout del CRM); con 50 filas y 120 s de lease, las del final vencían
+# mientras esta réplica seguía y otra las volvía a reclamar y enviar.
+LOTE = 10
+LEASE_SECONDS = 180  # ≥ LOTE × 15 s + margen
+# No se empieza un envío al que no le queda este margen de lease.
+MARGEN_DEL_LEASE = timedelta(seconds=20)
 
 
 class SenderWorker:
@@ -43,11 +52,24 @@ class SenderWorker:
         # 071 (D6): reservados para este worker (lease), no solo leídos: con
         # dos réplicas, leer sin reservar entregaba dos veces la misma fila.
         reclamar = getattr(self._ctx.store, "claim_pending_sends", None)
+        con_lease = callable(reclamar)
         pendientes = (
-            await reclamar(now) if callable(reclamar)
+            await reclamar(now, limit=LOTE, lease_seconds=LEASE_SECONDS) if con_lease
             else await self._ctx.store.due_pending_sends(now)
         )
+        inicio = time.monotonic()
         for item in pendientes:
+            if con_lease:
+                # A-3: el reloj de esta pasada (el `now` del reclamo + lo que
+                # ya se tardó). Sin margen de lease, la fila puede ser ya de
+                # otra réplica: se deja, y vuelve sola al vencer.
+                reloj = now + timedelta(seconds=time.monotonic() - inicio)
+                if reloj + MARGEN_DEL_LEASE >= item.next_retry_at:
+                    logger.warning(
+                        "sender: sin margen de lease para pending %d y siguientes — quedan para después",
+                        item.id,
+                    )
+                    break
             # Con quién hay que hablar para ESTA fila. En una Nea de un solo
             # negocio es siempre el mismo; en una multi-organización, el de
             # la organización que dejó el envío pendiente.

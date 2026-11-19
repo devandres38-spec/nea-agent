@@ -200,6 +200,9 @@ def canonical_handoff_reason(reason: str | None) -> str:
 
 class CrmClient:
     media_path = "/api/bot/media/"
+    # Auditoría 071 (A-2): ¿un 401/403 es la credencial de ESTA organización
+    # (terminal, `CrmRechazo`)? Solo en la superficie de cerebros (070 C-1).
+    rechazo_terminal = False
     def __init__(
         self,
         base_url: str,
@@ -520,6 +523,14 @@ class CrmClient:
             async with self._http.stream(
                 "GET", f"{self.media_path}{media_id}", **self._con_cabeceras({"timeout": 30.0})
             ) as resp:
+                if resp.status_code in (401, 403) and self.rechazo_terminal:
+                    # A-2: `stream` no pasa por `_request`; sin esto, la
+                    # credencial rechazada se leía como «no pude abrir el
+                    # adjunto» y el turno seguía como si nada.
+                    await resp.aread()
+                    raise CrmRechazo(
+                        resp.status_code, _conflict_code(resp) if resp.status_code == 403 else ""
+                    )
                 if resp.status_code != 200:
                     raise CrmError(f"media devolvió {resp.status_code}")
                 data = bytearray()

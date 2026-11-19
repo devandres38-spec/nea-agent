@@ -125,7 +125,11 @@ def test_un_trato_desconocido_es_tu():
 def test_sin_enlace_ni_pendiente_no_se_inventa_uno():
     datos = _d(VIERNES, url=None)
     assert evaluar("Listo, el viernes 18 de septiembre a las 10:00.", datos) == "ok"
-    assert evaluar("Listo, el viernes 18 de septiembre a las 10:00. https://inventado.test", datos) == "contradiccion"
+    # 071 auditoría (A-6): solo una videollamada inventada contradice; el
+    # enlace de Maps o la web del negocio en una cita presencial, no.
+    assert evaluar("Listo, el viernes 18 de septiembre a las 10:00. https://zoom.us/j/inventado", datos) == "contradiccion"
+    assert evaluar("Listo, el viernes 18 de septiembre a las 10:00. Te paso el enlace: https://x.test", datos) == "contradiccion"
+    assert evaluar("Listo, el viernes 18 de septiembre a las 10:00. Ubicación: https://maps.app.goo.gl/abc", datos) == "ok"
 
 
 async def test_reprogramar_pasa_por_el_guardarrail(respx_mock):

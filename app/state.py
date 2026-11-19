@@ -215,7 +215,7 @@ class Store(Protocol):
     ) -> int: ...
     async def due_pending_sends(self, now: datetime) -> list[PendingSend]: ...
     async def claim_pending_sends(
-        self, now: datetime, limit: int = 50, lease_seconds: int = 120
+        self, now: datetime, limit: int = 10, lease_seconds: int = 180
     ) -> list[PendingSend]:
         """Los vencidos, reservados (lease) para quien los reclama (071, D6)."""
         ...
@@ -395,7 +395,7 @@ class MemoryStore(MemoryDispatchStore):
         ]
 
     async def claim_pending_sends(
-        self, now: datetime, limit: int = 50, lease_seconds: int = 120
+        self, now: datetime, limit: int = 10, lease_seconds: int = 180
     ) -> list[PendingSend]:
         vencidos = (await self.due_pending_sends(now))[:limit]
         for p in vencidos:

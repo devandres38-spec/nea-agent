@@ -19,6 +19,7 @@ from pathlib import Path
 
 from dataclasses import dataclass
 
+from app.crm import CrmRechazo
 from app.state import AppContext, InboundMessage
 
 logger = logging.getLogger("nea.media")
@@ -239,6 +240,10 @@ async def describe_item(ctx: AppContext, msg: InboundMessage) -> MediaPart:
     handler = _HANDLERS.get(msg.type, _fallback)
     try:
         return await handler(ctx, msg)
+    except CrmRechazo:
+        # Auditoría 071 (A-2): la credencial ya no vale. No es un adjunto que
+        # no se pudo abrir: el turno entero se corta (terminal).
+        raise
     except Exception:
         logger.exception(
             "media %s (id=%s) no se pudo procesar — fallback honesto",

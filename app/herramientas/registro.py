@@ -23,6 +23,8 @@ class Capacidades:
     agenda_v2: bool = False
     coordinacion: bool = False
     contexto: dict[str, Any] | None = None
+    # 038 — A qué etapas se puede mover al lead (`lead.nextStages`).
+    etapas: tuple[str, ...] = ()
 
 
 Esquema = Callable[[Capacidades], dict[str, Any]]

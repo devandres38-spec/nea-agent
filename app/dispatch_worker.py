@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import Counter
+from contextlib import AsyncExitStack
 from datetime import datetime, timezone
 from typing import Any
 
@@ -60,18 +61,40 @@ def _al_tope(en_vuelo: Counter[str] | None, maximo: int) -> list[str]:
     return [org for org, n in en_vuelo.items() if n >= maximo]
 
 
+def _candado_de(en_vuelo: Counter[str]) -> asyncio.Lock:
+    """El candado del reclamo, compartido por los consumidores de `en_vuelo`."""
+    candado = getattr(en_vuelo, "_candado_reclamo", None)
+    if candado is None:
+        candado = asyncio.Lock()
+        en_vuelo._candado_reclamo = candado  # type: ignore[attr-defined]
+    return candado
+
+
 async def drain_one(ctx: Any, en_vuelo: Counter[str] | None = None) -> bool:
     """Atiende UN despacho si hay alguno disponible. False = cola vacía.
 
     `en_vuelo` lo comparten los consumidores de este proceso: turnos que
     corren ahora, por organización.
+
+    Auditoría 071 (A-1): mirar el tope, reclamar y contar van juntos bajo un
+    candado. Antes, ocho consumidores veían a la vez `en_vuelo[org] == 0`
+    durante el `await` del reclamo y se llevaban ocho turnos del mismo negocio,
+    saltándose `DISPATCH_MAX_POR_ORG`. El candado se suelta antes del turno:
+    solo serializa el reclamo (una consulta corta).
     """
     maximo = int(getattr(ctx.settings, "dispatch_max_por_org", 0) or 0)
-    async with ctx.store.claim_dispatch(_al_tope(en_vuelo, maximo)) as job:
+    async with AsyncExitStack() as pila:
+        if en_vuelo is None:
+            job = await pila.enter_async_context(ctx.store.claim_dispatch([]))
+        else:
+            async with _candado_de(en_vuelo):
+                job = await pila.enter_async_context(
+                    ctx.store.claim_dispatch(_al_tope(en_vuelo, maximo))
+                )
+                if job is not None:
+                    en_vuelo[job.organization_id] += 1
         if job is None:
             return False
-        if en_vuelo is not None:
-            en_vuelo[job.organization_id] += 1
         org = organizacion_del_despacho(job.payload)
         try:
             # 071 (D8): cada línea del turno dice de qué negocio, despacho y
