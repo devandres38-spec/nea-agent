@@ -81,6 +81,12 @@ def credencial_derivada(secreto_despliegue: str, organization_id: str) -> str:
     return base64.urlsafe_b64encode(mac).rstrip(b"=").decode()
 
 
+def limites_http(dispatch_concurrency: int) -> httpx.Limits:
+    """El pool HTTP compartido hacia el CRM: nunca menos de 32 conexiones."""
+    maximo = max(32, int(dispatch_concurrency) * 2 + 8)
+    return httpx.Limits(max_connections=maximo, max_keepalive_connections=maximo // 2)
+
+
 class RegistroDeOrganizaciones:
     """Lo que esta Nea necesita para hablar con el CRM en nombre de N negocios.
 
@@ -116,6 +122,7 @@ class RegistroDeOrganizaciones:
         nombre_por_defecto: str = "Asistente",
         brief_path: str | None = None,
         agenda_ttl: float = 60.0,
+        dispatch_concurrency: int = 8,
     ) -> None:
         self._base_url = base_url
         self._secreto = secreto_despliegue
@@ -124,7 +131,9 @@ class RegistroDeOrganizaciones:
         self._http = httpx.AsyncClient(
             base_url=base_url.rstrip("/"),
             timeout=15.0,
-            limits=httpx.Limits(max_connections=32, max_keepalive_connections=16),
+            # Auditoría 071 (B-1): el pool crece con los turnos en vuelo
+            # (~2 llamadas solapadas por turno + el proxy del LLM).
+            limits=limites_http(dispatch_concurrency),
         )
         # Cacheados por la tupla completa y no por organizacion: si el miembro
         # cambia de modelo, la tupla cambia y el siguiente turno ya usa el

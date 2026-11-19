@@ -117,6 +117,10 @@ class PgStore(PgDispatchStore):
         )
         logger.info("tablas de Nea en el esquema %s", self._schema)
 
+    def _llave(self, que: str) -> str:
+        """Llave de candado consultivo de este esquema (B-2)."""
+        return f"nea:{que}:{self._schema or 'public'}"
+
     async def migrate(self, migrations_dir: Path) -> None:
         """Aplica todas las migraciones en orden. Son idempotentes: re-correr es seguro."""
         files = sorted(migrations_dir.glob("*.sql"))
@@ -124,13 +128,19 @@ class PgStore(PgDispatchStore):
             # 071 (H9) — Con varias réplicas arrancando a la vez, dos
             # `CREATE INDEX IF NOT EXISTS` pueden chocar. Una a la vez; el
             # candado de sesión se suelta solo si el proceso muere.
-            await conn.execute("SELECT pg_advisory_lock(hashtextextended('nea:migrate', 0))")
+            # Auditoría 071 (B-2): la llave lleva el esquema — dos Nea en la
+            # misma base con `DATABASE_SCHEMA` distinto no se esperan.
+            llave = self._llave("migrate")
+            await conn.execute("SELECT pg_advisory_lock(hashtextextended($1, 0))", llave)
             try:
                 for path in files:
                     logger.info("migración: aplicando %s", path.name)
                     await conn.execute(path.read_text(encoding="utf-8"))
             finally:
-                await conn.execute("SELECT pg_advisory_unlock(hashtextextended('nea:migrate', 0))")
+                try:
+                    await conn.execute("SELECT pg_advisory_unlock(hashtextextended($1, 0))", llave)
+                except Exception as exc:  # conexión caída: el candado murió con ella
+                    logger.warning("migración: no pude soltar el candado (%s)", exc)
 
     # -------------------------------------------------------------- dedup ---
 
@@ -431,9 +441,12 @@ class PgStore(PgDispatchStore):
                 async with self.pool.acquire() as conn:
                     async with conn.transaction():
                         if not await conn.fetchval(
-                            "SELECT pg_try_advisory_xact_lock(hashtextextended('nea:purga', 0))"
+                            "SELECT pg_try_advisory_xact_lock(hashtextextended($1, 0))",
+                            self._llave("purga"),
                         ):
-                            return None
+                            # B-2: si otra réplica la tomó a mitad, lo ya
+                            # borrado se informa igual.
+                            return borradas if any(borradas.values()) else None
                         resultado = await conn.execute(sql, antiguedad, lote)
                 n = int(resultado.split()[-1])
                 borradas[tabla] += n

@@ -278,16 +278,16 @@ async def recibir(request: Request) -> Any:
             return await ensayar(ctx, payload)
 
 
-_CUPOS: dict[int, tuple[int, asyncio.Semaphore]] = {}
-
-
 def _cupos(ctx: AppContext) -> asyncio.Semaphore:
-    """El semáforo de ensayos de esta app (uno por proceso y por contexto)."""
-    n = ctx.settings.ensayo_concurrency
-    actual = _CUPOS.get(id(ctx.settings))
-    if actual is None or actual[0] != n:
-        actual = _CUPOS[id(ctx.settings)] = (n, asyncio.Semaphore(n))
-    return actual[1]
+    """El semáforo de ensayos de esta app.
+
+    Auditoría 071 (B-3): vive en el `AppContext` de la app (antes, un
+    diccionario global por `id(settings)` que no se vaciaba nunca y podía
+    reusar el id de un `Settings` ya liberado).
+    """
+    if ctx.ensayo_cupos is None:
+        ctx.ensayo_cupos = asyncio.Semaphore(max(1, ctx.settings.ensayo_concurrency))
+    return ctx.ensayo_cupos
 
 
 async def ensayar(ctx: AppContext, payload: dict[str, Any]) -> dict[str, Any]:
@@ -379,8 +379,11 @@ async def ensayar(ctx: AppContext, payload: dict[str, Any]) -> dict[str, Any]:
             slug, ctx.settings.ensayo_timeout_seconds, len(resultado),
         )
     finally:
-        await crm.aclose()
-        await llm._client.close()
+        # B-3: cerrar uno no puede impedir cerrar el otro.
+        try:
+            await crm.aclose()
+        finally:
+            await llm._client.close()
 
     if agotado:
         return {"ok": False, "error": "tiempo_agotado", "simulated": True, "turns": resultado}

@@ -129,7 +129,7 @@ class PgDispatchStore:
         row = await self.pool.fetchrow("""
           SELECT count(*) FILTER (WHERE state <> 'started') AS pending,
                  count(*) FILTER (WHERE state = 'started') AS started,
-                 COALESCE(EXTRACT(EPOCH FROM now() - min(created_at)), 0)::bigint AS oldest
+                 GREATEST(0, COALESCE(EXTRACT(EPOCH FROM now() - min(created_at)), 0))::bigint AS oldest
           FROM dispatch_inbox WHERE state <> 'done'""")
         sends = await self.pool.fetchval("""SELECT count(*) FROM pending_send
           WHERE delivered_at IS NULL AND abandoned_at IS NULL""")

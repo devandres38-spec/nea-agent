@@ -32,6 +32,10 @@ class Enfoque:
     lead_listo: str
     # Párrafo final (una línea tras el chasis); `None` = no hay.
     prioridad: str | None = None
+    # Auditoría 071 (M-4): la línea del CONTEXTO ACTUAL en el primer contacto.
+    # Los dos enfoques de hoy dicen lo mismo (dorados intactos); un rol futuro
+    # puede decir otra cosa sin tocar `app/prompt.py`.
+    primer_contacto: str = "saluda transparente, gancho + UNA pregunta"
 
 
 @dataclass(frozen=True)
@@ -47,7 +51,13 @@ class RolSpec:
     personas: tuple[str, ...] = field(default_factory=tuple)
 
     def enfoque(self, nombre: str) -> Enfoque:
-        return self.enfoques.get(nombre) or self.enfoques[CALIFICAR]
+        """El enfoque de la superficie; si el rol no lo define, el de
+        calificar, y si tampoco, el primero que tenga (M-4: sin KeyError)."""
+        return (
+            self.enfoques.get(nombre)
+            or self.enfoques.get(CALIFICAR)
+            or next(iter(self.enfoques.values()))
+        )
 
     def permite(self, clave: str) -> bool:
         return self.herramientas is None or clave == "escalar" or clave in self.herramientas

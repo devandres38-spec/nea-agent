@@ -19,6 +19,7 @@ import json
 from app.config import ZONA_POR_DEFECTO
 from app.chasis import armar_chasis
 from app.profile import BusinessProfile
+from app.roles import enfoque_de, rol_de
 from app.state import Conversation, OfferedSlot
 from app.tools import etapas_siguientes
 
@@ -471,8 +472,10 @@ def build_system_prompt(
         lines.append(f'- El lead llegó desde el anuncio: "{headline}".')
 
     if not conv.greeted:
+        # M-4: la línea es del enfoque del rol, no fija.
+        enfoque = rol_de(profile.role).enfoque(enfoque_de(profile))
         lines.append(
-            "- Es el PRIMER contacto: saluda transparente, gancho + UNA pregunta."
+            f"- Es el PRIMER contacto: {enfoque.primer_contacto}."
             + (" Personaliza el saludo mencionando el anuncio." if headline else "")
         )
 

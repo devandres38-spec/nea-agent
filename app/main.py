@@ -45,6 +45,8 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
+PING_TIMEOUT_SECONDS = 2.0
+
 logger = logging.getLogger("nea.main")
 
 
@@ -198,6 +200,7 @@ def create_app(ctx: AppContext | None = None) -> FastAPI:
                     nombre_por_defecto=settings.agent_name,
                     brief_path=settings.brief_path or None,
                     agenda_ttl=settings.agenda_probe_ttl_seconds,
+                    dispatch_concurrency=settings.dispatch_concurrency,
                 )
                 crm = CrmSinOrganizacion()
             elif settings.cloud_mode:
@@ -327,7 +330,10 @@ def create_app(ctx: AppContext | None = None) -> FastAPI:
             )
         identidad = _identidad(c.settings)
         try:
-            await c.store.ping()
+            # Auditoría 071 (M-2): una base congelada (TCP, pool agotado) no
+            # cuelga /health: a los 2 s es `degraded` y Docker lo ve.
+            async with asyncio.timeout(PING_TIMEOUT_SECONDS):
+                await c.store.ping()
         except Exception:
             logger.exception("health: la DB no responde")
             return JSONResponse(

@@ -488,6 +488,8 @@ class AppContext:
     # AGENDA allá llega sin reiniciar Nea. None = sin sonda (pruebas que fijan
     # `agenda_enabled` a mano).
     agenda_sonda: Any | None = None
+    # Auditoría 071 (B-3): cupos de ensayo de esta app (`app/ensayo.py`).
+    ensayo_cupos: asyncio.Semaphore | None = None
     # Un candado por identidad: los turnos de UNA conversación se serializan.
     # Sin esto, una ráfaga que llega mientras el turno anterior sigue en vuelo
     # abre un segundo turno con contexto viejo (se reservó una cita antes de

@@ -78,12 +78,20 @@ class EnmascararDigitos(logging.Filter):
         if isinstance(record.msg, str):
             record.msg = enmascarar(record.msg)
         if isinstance(record.args, tuple):
-            record.args = tuple(enmascarar(a) if isinstance(a, str) else a for a in record.args)
+            record.args = tuple(_enmascarar_arg(a) for a in record.args)
         elif isinstance(record.args, dict):
-            record.args = {
-                k: enmascarar(v) if isinstance(v, str) else v for k, v in record.args.items()
-            }
+            record.args = {k: _enmascarar_arg(v) for k, v in record.args.items()}
         return True
+
+
+def _enmascarar_arg(valor: Any) -> Any:
+    """Auditoría 071 (M-1): una excepción pasada como argumento
+    (`logger.warning("falló: %s", exc)`) lleva el teléfono en su texto."""
+    if isinstance(valor, str):
+        return enmascarar(valor)
+    if isinstance(valor, BaseException):
+        return enmascarar(str(valor))
+    return valor
 
 
 class FormatoJson(logging.Formatter):
@@ -92,7 +100,9 @@ class FormatoJson(logging.Formatter):
             "ts": datetime.fromtimestamp(record.created, timezone.utc).isoformat(timespec="milliseconds"),
             "level": record.levelname,
             "logger": record.name,
-            "msg": record.getMessage(),
+            # M-1: lo que llegue sin pasar por el filtro (otro handler, un
+            # objeto con PII en su __str__) se tapa igual al formatear.
+            "msg": enmascarar(record.getMessage()),
             **contexto_actual(),
         }
         if record.exc_info:
@@ -111,7 +121,8 @@ class FormatoTexto(logging.Formatter):
         ctx = contexto_actual()
         if ctx:
             linea += " [" + " ".join(f"{k}={v}" for k, v in ctx.items()) + "]"
-        return linea
+        # M-1: incluye el traceback (`exc_info`), que el filtro no ve.
+        return enmascarar(linea)
 
 
 _LOGGERS_PROPIOS = ("uvicorn", "uvicorn.error", "uvicorn.access")
