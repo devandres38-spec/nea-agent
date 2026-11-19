@@ -842,7 +842,15 @@ async def test_071_purga_respeta_retencion_y_lo_vivo(store):
 
 
 async def test_071_dos_purgas_a_la_vez_no_se_pisan(store):
+    # Auditoría 071 (B-2): la llave lleva el esquema.
     async with store.pool.acquire() as conn:
         async with conn.transaction():
-            await conn.fetchval("SELECT pg_advisory_xact_lock(hashtextextended('nea:purga', 0))")
+            await conn.fetchval("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", store._llave("purga"))
             assert await store.purgar(14, 30) is None
+
+
+async def test_071_auditoria_b2_el_candado_de_otro_esquema_no_bloquea(store):
+    async with store.pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.fetchval("SELECT pg_advisory_xact_lock(hashtextextended('nea:purga:otro_esquema', 0))")
+            assert await store.purgar(14, 30) is not None
