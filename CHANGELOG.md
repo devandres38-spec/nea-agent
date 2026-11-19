@@ -62,6 +62,27 @@ sigue como antes (`tu`, cierre encendido, sonda de agenda).
   (`app/herramientas/`). El prompt de siempre sale idéntico byte a byte salvo
   las líneas aprobadas (pruebas doradas).
 
+### Auditoría de la 071 (antes del merge)
+
+- **Confirmación de cita**: «p. m.», «a. m.» y «10.30» ya no engañan al
+  guardarraíl; «9:00 de la noche» se lee bien; la cita sale del instante
+  reservado (no de la etiqueta: «mar» no es marzo); en una cita movida solo
+  cuenta la fecha nueva; «hoy» por «mañana» se detecta; «15 minutos antes» y
+  el enlace de Maps de una cita presencial ya no borran la respuesta; entiende
+  respuestas en inglés.
+- **Tope por negocio** (`DISPATCH_MAX_POR_ORG`) sin carrera entre consumidores.
+- **401/403 del CRM** terminales también al enviar, al leer el contexto y al
+  bajar un adjunto: sin reintentos ni `pending_send`.
+- **Envío diferido**: lotes de 10 con lease de 180 s; no se empieza un envío
+  sin margen de lease (dos réplicas no entregan dos veces).
+- **Herramientas**: solo se ejecuta lo que se le ofreció al modelo (perfil,
+  rol y agenda); el catálogo recibe el contexto del turno.
+- **Cierre sin rumbo**: no se reabre una conversación en handoff o con la
+  ventana cerrada, y en cloud el contexto no se pide dos veces.
+- Logs sin teléfonos también en excepciones y tracebacks; `/health` no se
+  cuelga con la base congelada (2 s); pool HTTP según `DISPATCH_CONCURRENCY`;
+  candados con el esquema (`DATABASE_SCHEMA`); cupos de ensayo por app.
+
 ### Corregido
 
 - **Un negocio reasignado ya no tumba a los demás de la misma Nea**
