@@ -19,7 +19,7 @@ from app.llm import LlmExhausted
 from app.profile import resolve_profile
 from app.prompt import FOLLOWUP_INSTRUCTION, build_system_prompt, zona_del_negocio
 from app.state import AppContext, Conversation, utcnow
-from app.multiorg import ctx_de_organizacion
+from app.multiorg import contexto_del_turno, ctx_de_organizacion
 from app.turn import conversation_lock
 from app.turn import _agent_tz
 
@@ -67,7 +67,11 @@ class FollowupWorker:
                         conv.wa_identity,
                     )
                     continue
-                async with conversation_lock(self._ctx, conv.wa_identity):
+                if not self._ctx.settings.multi_org:
+                    ctx = contexto_del_turno(ctx)  # 071 (D3)
+                async with conversation_lock(
+                    self._ctx, conv.wa_identity, conv.organization_id
+                ):
                     await self._push(ctx, conv, ultimo_inbound)
             except Exception:
                 logger.exception(

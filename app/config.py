@@ -246,6 +246,30 @@ class Settings(BaseSettings):
     database_schema: str = Field(default="", pattern=r"^[a-z_][a-z0-9_]{0,62}$|^$")
     port: int = 8000
 
+    # ── Capacidad (vocero-crm 071, D2) ─────────────────────────────────
+    #
+    # Turnos a la vez por proceso. Un turno es casi todo espera (el modelo
+    # tarda 2–20 s), así que la CPU no es el límite: lo son la memoria por
+    # turno (imágenes en base64), las conexiones a Postgres y la presión
+    # sobre el CRM. 8 cabe con holgura en el VPS inicial (4 vCPU / 7.8 GiB
+    # compartido con Postgres y el CRM). Dos mensajes de la MISMA
+    # conversación nunca corren a la vez: eso lo garantiza la cola.
+    dispatch_concurrency: int = Field(default=8, ge=1, le=64)
+    # Cuántos de esos turnos puede ocupar un mismo negocio. Que la ráfaga de
+    # uno —o su llave con límite de tasa— no deje esperando a los demás.
+    # 0 = sin tope.
+    dispatch_max_por_org: int = Field(default=3, ge=0)
+    # Conexiones a Postgres de este proceso. 0 = automático: un turno a la
+    # vez por consumidor más 4 para el envío diferido, el mantenimiento,
+    # `/health` y la recepción del despacho.
+    db_pool_max: int = Field(default=0, ge=0, le=200)
+
+    @property
+    def pool_max(self) -> int:
+        if self.db_pool_max:
+            return max(4, self.db_pool_max)
+        return self.dispatch_concurrency + 4
+
     # Desarrollo: loguear el JSON crudo de mensajes no-texto entrantes para
     # capturar los formatos reales de Meta (spec 002). Apagar al terminar.
     capture_payloads: bool = False

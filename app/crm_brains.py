@@ -74,15 +74,34 @@ class BrainsCrmClient(CrmClient):
         organization: str,
         timeout: float = 15.0,
         client: httpx.AsyncClient | None = None,
+        *,
+        compartido: bool = False,
     ) -> None:
+        cabeceras = {
+            "Authorization": f"Bearer {secret}",
+            "X-Vocero-Organization": organization,
+        }
         self._http = client or httpx.AsyncClient(
             base_url=base_url.rstrip("/"),
-            headers={
-                "Authorization": f"Bearer {secret}",
-                "X-Vocero-Organization": organization,
-            },
+            headers=cabeceras,
             timeout=timeout,
         )
+        # 071 (D3) — `compartido`: el transporte es UNO para todos los
+        # negocios de esta Nea (app/multiorg.py). No es nuestro —no se cierra—
+        # y la credencial del negocio viaja en cada petición, no fija en él.
+        self._propietario = not compartido
+        self._cabeceras: dict[str, str] = cabeceras if compartido else {}
+        self._reiniciar_estado_del_turno()
+
+    def _reiniciar_estado_del_turno(self) -> None:
+        """Lo que este cliente aprende de UN turno (071, D3).
+
+        Antes vivía en un cliente por organización que compartían todos los
+        turnos de ese negocio: el perfil, la IA y las capacidades eran «los
+        del último contexto», y los diccionarios por conversación crecían sin
+        fin. Ahora el cliente es por turno (`para_turno`, o uno nuevo del
+        registro) y esto muere con él.
+        """
         # De qué conversación es cada identidad. Lo llena el despacho: el CRM
         # ya sabe de quién es el mensaje, así que Nea no tiene que averiguarlo.
         self._conversaciones: dict[str, str] = {}
@@ -91,6 +110,7 @@ class BrainsCrmClient(CrmClient):
         self._despachos: dict[str, str] = {}
         self._envelopes: dict[str, dict[str, Any]] = {}
         self.supports_agenda_v2 = False
+        self.supports_coordination = False
         # El perfil viaja DENTRO del contexto en esta superficie. Se guarda al
         # pedirlo para que `get_profile()` no gaste una llamada de más por
         # turno — y para que el perfil sea el de la conversación que se está

@@ -171,7 +171,9 @@ def create_app(ctx: AppContext | None = None) -> FastAPI:
         if own_resources:
             settings = Settings()
             _avisar_obsoletas()
-            store = PgStore(settings.database_url, settings.database_schema)
+            store = PgStore(
+                settings.database_url, settings.database_schema, settings.pool_max
+            )
             await store.connect()
             await store.migrate(MIGRATIONS_DIR)
             logger.info("migraciones aplicadas — DB lista")

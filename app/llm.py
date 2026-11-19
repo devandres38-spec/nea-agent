@@ -92,6 +92,7 @@ class OpenAiLlm:
         reasoning_effort: str = "",
         provider_sort: str = "",
         timeout: float = DEFAULT_TIMEOUT,
+        http_client: Any | None = None,
     ) -> None:
         # base_url ≠ None → proveedor OpenAI-compatible (p. ej. OpenRouter,
         # para el bench de modelos del 002). Ojo: la transcripción de audio
@@ -114,6 +115,11 @@ class OpenAiLlm:
             default_headers=default_headers,
             timeout=timeout,
             max_retries=0,
+            # 071 (D3) — En multi-organización todos los modelos se piensan por
+            # el CRM (`/api/brains/llm`): mismo host que el resto. Comparten el
+            # transporte del registro en vez de abrir un pool por modelo que
+            # nadie cerraba al cambiar de modelo.
+            **({"http_client": http_client} if http_client is not None else {}),
         )
         self._model = model
         self._transcribe_model = transcribe_model

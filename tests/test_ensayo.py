@@ -133,7 +133,7 @@ async def test_agendamiento_completo_sin_que_salga_nada():
     for llamada in [*modelo.calls, *huecos.calls]:
         req = llamada.request
         assert req.headers["authorization"] == f"Bearer {credencial_derivada(SECRETO, ORG)}"
-        assert req.headers["x-vocero-organization"] == SLUG
+        assert req.headers["x-vocero-organization"] == ORG  # 071 (D4): el id
         assert req.headers["x-vocero-ensayo"] == FICHA
     assert huecos.calls[0].request.url.params["conversationId"] == "cv_ensayo_1"
     # La llave de la plataforma no viaja nunca.

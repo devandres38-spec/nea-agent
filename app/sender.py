@@ -14,7 +14,7 @@ import logging
 from datetime import datetime, timedelta
 
 from app.crm import CrmConflict, CrmError
-from app.multiorg import ctx_de_organizacion
+from app.multiorg import contexto_del_turno, ctx_de_organizacion
 from app.state import AppContext, PendingSend, utcnow
 
 logger = logging.getLogger("nea.sender")
@@ -54,6 +54,10 @@ class SenderWorker:
                 )
                 await self._ctx.store.mark_pending_send_abandoned(item.id)
                 continue
+            if not self._ctx.settings.multi_org:
+                # 071 (D3): lo que el envío le enseña al cliente (el despacho
+                # que contesta) vive en una vista, no en el cliente de la app.
+                ctx = contexto_del_turno(ctx)
             if now - item.created_at > self.MAX_AGE:
                 logger.error(
                     "sender: pending %d agotó las 24 h sin entregar — abandonado + handoff",

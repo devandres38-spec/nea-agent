@@ -666,3 +666,129 @@ async def test_olvidar_borra_los_despachos_guardados_menos_el_que_corre(store):
         ("org_b", "dsp_4"),
         ("org_a", "olvido:olv_1"),
     ]
+
+
+# ─────────────────────────────── 071 (D1): reclamo por conversación ───
+
+
+def _d071(org: str, conv: str, n: int, tipo: str | None = None) -> dict:
+    cuerpo = {
+        "dispatchId": f"{'olvido:' if tipo else 'dsp_'}{org}_{conv}_{n}",
+        "organization": {"id": org, "slug": org},
+        "conversation": {"id": conv},
+        "contact": {"identity": f"57300{conv}"},
+        "messages": [{"id": f"m{n}", "type": "text", "text": "hola"}],
+    }
+    if tipo:
+        cuerpo["type"] = tipo
+    return cuerpo
+
+
+async def test_071_dos_replicas_no_atienden_la_misma_conversacion_a_la_vez(store):
+    """Dos `PgStore` (dos réplicas) reclamando en paralelo: de cv_1 solo sale
+    UNO, y la otra réplica se lleva cv_2. Nada de advisory locks."""
+    await store.enqueue_dispatch("org_a", _d071("org_a", "cv_1", 1))
+    await store.enqueue_dispatch("org_a", _d071("org_a", "cv_1", 2))
+    await store.enqueue_dispatch("org_a", _d071("org_a", "cv_2", 1))
+    otra = PgStore(store._dsn)
+    await otra.connect()
+    try:
+        async with store.claim_dispatch() as a:
+            async with otra.claim_dispatch() as b:
+                async with otra.claim_dispatch() as c:
+                    assert a and b
+                    assert {a.conversation_id, b.conversation_id} == {"cv_1", "cv_2"}
+                    assert c is None  # cv_1#2 espera a cv_1#1
+                    activos = await store.pool.fetchval(
+                        "SELECT count(*) FROM dispatch_inbox WHERE state='started'"
+                    )
+                    assert activos == 2
+                    await b.finish()
+            await a.finish()
+    finally:
+        await otra.aclose()
+
+
+async def test_071_reclamos_simultaneos_contra_postgres(store):
+    """Muchos reclamos a la vez (como 8 consumidores de 2 réplicas): nunca dos
+    filas `started` de la misma conversación."""
+    for conv in ("cv_1", "cv_2", "cv_3"):
+        for n in range(1, 4):
+            await store.enqueue_dispatch("org_a", _d071("org_a", conv, n))
+    otra = PgStore(store._dsn)
+    await otra.connect()
+    vistos: list[str] = []
+
+    async def reclamar(s: PgStore) -> None:
+        async with s.claim_dispatch() as job:
+            if job is not None:
+                vistos.append(job.conversation_id)
+                await asyncio.sleep(0.05)
+
+    try:
+        await asyncio.gather(*(reclamar(s) for s in [store, otra] * 4))
+    finally:
+        await otra.aclose()
+    assert sorted(vistos) == ["cv_1", "cv_2", "cv_3"]
+
+
+async def test_071_empate_de_created_at_no_abre_dos_turnos(store):
+    """Dos despachos de la misma conversación con el MISMO `created_at`: el
+    desempate por `dispatch_id` deja uno solo como «el más viejo»."""
+    import json as _json
+    for n in (1, 2):
+        await store.pool.execute(
+            """INSERT INTO dispatch_inbox (organization_id, dispatch_id, conversation_id, payload, created_at)
+               VALUES ('org_a', $1, 'cv_1', $2::jsonb, '2026-11-18T10:00:00Z')""",
+            f"dsp_{n}", _json.dumps(_d071("org_a", "cv_1", n)),
+        )
+    async with store.claim_dispatch() as uno:
+        async with store.claim_dispatch() as dos:
+            assert uno and uno.payload["dispatchId"] == "dsp_org_a_cv_1_1"
+            assert dos is None
+        await uno.finish()
+
+
+async def test_071_el_olvido_queda_detras_del_turno_en_vuelo(store):
+    """Verificación de D1: `conversation.deleted` de cv_1 no corre mientras
+    un turno de cv_1 está en vuelo, ni antes que él."""
+    await store.enqueue_dispatch("org_a", _d071("org_a", "cv_1", 1))
+    async with store.claim_dispatch() as turno:
+        assert turno.conversation_id == "cv_1"
+        await store.enqueue_dispatch("org_a", _d071("org_a", "cv_1", 2, tipo="conversation.deleted"))
+        async with store.claim_dispatch() as nada:
+            assert nada is None
+        await turno.finish()
+    async with store.claim_dispatch() as olvido:
+        assert olvido.payload["type"] == "conversation.deleted"
+        await olvido.finish()
+
+
+async def test_071_tope_por_negocio_y_recuperacion(store):
+    await store.enqueue_dispatch("org_a", _d071("org_a", "cv_1", 1))
+    await store.enqueue_dispatch("org_b", _d071("org_b", "cv_9", 1))
+    async with store.claim_dispatch(excluir=["org_a"]) as job:
+        assert job.organization_id == "org_b"
+        await job.finish()
+    async with store.claim_dispatch() as viejo:
+        assert viejo.organization_id == "org_a" and not viejo.recovery
+    await store.pool.execute("UPDATE dispatch_inbox SET available_at = now() - interval '1 second'")
+    async with store.claim_dispatch() as recuperado:
+        assert recuperado.recovery
+        try:
+            await viejo.finish()
+        except RuntimeError as exc:
+            assert "ownership" in str(exc)
+        await recuperado.finish()
+
+
+async def test_071_migrar_en_paralelo_no_choca(base_de_prueba):
+    """H9: dos réplicas arrancando a la vez aplican las migraciones en fila."""
+    a, b = PgStore(base_de_prueba), PgStore(base_de_prueba)
+    await a.connect()
+    await b.connect()
+    try:
+        await asyncio.gather(a.migrate(MIGRATIONS_DIR), b.migrate(MIGRATIONS_DIR))
+    finally:
+        await a.aclose()
+        await b.aclose()

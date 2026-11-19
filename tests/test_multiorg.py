@@ -114,13 +114,20 @@ def test_sin_id_no_hay_organizacion(payload):
 # ------------------------------------------------------- el registro -------
 
 
-def test_el_registro_reutiliza_el_cliente_por_organizacion():
+def test_cada_turno_tiene_su_cliente_sobre_un_solo_transporte():
+    """071 (D3) — Antes: un cliente cacheado por organización, que guardaba lo
+    del ÚLTIMO contexto y compartían todos los turnos del negocio. Ahora cada
+    turno recibe el suyo; lo único compartido es el pool HTTP hacia el CRM, y
+    cada petición lleva la credencial de SU organización."""
     reg = RegistroDeOrganizaciones("http://crm", SECRETO)
     uno = reg.cliente("org_1", "uno")
     otra_vez = reg.cliente("org_1", "uno")
     distinto = reg.cliente("org_2", "dos")
-    assert uno is otra_vez
-    assert uno is not distinto
+    assert uno is not otra_vez
+    assert uno._http is otra_vez._http is distinto._http
+    assert uno._cabeceras["Authorization"] == f"Bearer {credencial_derivada(SECRETO, 'org_1')}"
+    assert distinto._cabeceras["Authorization"] == f"Bearer {credencial_derivada(SECRETO, 'org_2')}"
+    assert uno._cabeceras["X-Vocero-Organization"] == "org_1"  # D4: el id
 
 
 def test_el_llm_apunta_al_crm_y_no_al_proveedor():
@@ -148,7 +155,7 @@ def test_el_llm_dice_de_que_organizacion_es_cada_llamada():
     reg = RegistroDeOrganizaciones("http://crm", SECRETO)
     cliente = reg.llm(ORG, "mi-negocio", {"model": "a/b"}, Settings())
     cabeceras = cliente._client.default_headers or {}
-    assert cabeceras.get("X-Vocero-Organization") == "mi-negocio"
+    assert cabeceras.get("X-Vocero-Organization") == ORG  # 071 (D4): el id
 
 
 def test_el_modelo_que_conversa_cae_al_de_la_instancia():
@@ -250,7 +257,10 @@ def test_en_multiorg_el_contexto_trae_el_cliente_de_esa_organizacion():
     resuelto = ctx_de_organizacion(ctx, "org_1", "uno")
     assert resuelto is not None
     assert resuelto.organizacion == ("org_1", "uno")
-    assert resuelto.crm is ctx.registro.cliente("org_1", "uno")
+    # 071 (D3, D4): un cliente propio, con la credencial y el id de org_1.
+    assert resuelto.crm._cabeceras["Authorization"] == f"Bearer {credencial_derivada(SECRETO, 'org_1')}"
+    assert resuelto.crm._cabeceras["X-Vocero-Organization"] == "org_1"
+    assert resuelto.crm._http is ctx.registro._http
 
 
 def test_sin_organizacion_conocida_el_worker_se_calla():

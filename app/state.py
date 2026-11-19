@@ -457,6 +457,7 @@ class AppContext:
     # Sin esto, una ráfaga que llega mientras el turno anterior sigue en vuelo
     # abre un segundo turno con contexto viejo (se reservó una cita antes de
     # leer el mensaje que la corregía, y salieron dos respuestas encimadas).
-    turn_locks: dict[str, asyncio.Lock] = field(default_factory=dict)
-    # Cuántos turnos tienen tomado (o esperan) el candado de esa identidad.
-    turn_lock_users: dict[str, int] = field(default_factory=dict)
+    # Clave (organization_id, identidad) desde la 071.
+    turn_locks: dict[tuple[str, str], asyncio.Lock] = field(default_factory=dict)
+    # Cuántos turnos tienen tomado (o esperan) el candado de esa clave.
+    turn_lock_users: dict[tuple[str, str], int] = field(default_factory=dict)

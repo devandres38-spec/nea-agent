@@ -280,4 +280,4 @@ async def test_multiorg_el_handoff_lleva_la_credencial_de_esa_organizacion(
     assert peticion.headers["authorization"] == (
         f"Bearer {credencial_derivada(SECRETO, 'org_1')}"
     )
-    assert peticion.headers["x-vocero-organization"] == "negocio-a"
+    assert peticion.headers["x-vocero-organization"] == "org_1"  # 071 (D4): el id

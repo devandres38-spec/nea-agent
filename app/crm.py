@@ -17,6 +17,8 @@ Endpoints:
 """
 from __future__ import annotations
 
+import copy
+
 import logging
 from typing import Any
 
@@ -210,6 +212,13 @@ class CrmClient:
             headers={"X-API-Key": api_key},
             timeout=timeout,
         )
+        # 071 (D3) — ¿Este cliente es dueño de su transporte? Una vista por
+        # turno (`para_turno`) o un cliente del registro multi-organización
+        # comparten el pool HTTP con otros: cerrarlo los dejaría sin red.
+        self._propietario = True
+        # Cabeceras que viajan en CADA petición: las del negocio cuando el
+        # transporte es compartido y no puede llevarlas fijas.
+        self._cabeceras: dict[str, str] = {}
         # 031 — De qué conversación es cada identidad, según el despacho. Con
         # ella el contexto se pide por conversación y no por persona: es la
         # que el CRM despachó, aunque esa persona tenga otra.
@@ -219,9 +228,31 @@ class CrmClient:
         """Asocia una identidad con su conversación, desde el despacho."""
         self._conversaciones[identity] = conversation_id
 
+    def para_turno(self) -> "CrmClient":
+        """071 (D3) — Una vista de este cliente para UN turno.
+
+        Comparte el transporte (pool de conexiones, cabeceras) y nada más: lo
+        que el turno aprende del CRM —de qué conversación es cada identidad,
+        el despacho que contesta, el contexto y sus capacidades— vive en la
+        vista y muere con ella. Así dos turnos concurrentes no se pisan, y
+        nada por conversación se acumula durante la vida del proceso.
+        """
+        vista = copy.copy(self)
+        vista._propietario = False
+        vista._reiniciar_estado_del_turno()
+        return vista
+
+    def _reiniciar_estado_del_turno(self) -> None:
+        self._conversaciones = {}
+
+    def _con_cabeceras(self, kwargs: dict[str, Any]) -> dict[str, Any]:
+        if self._cabeceras:
+            kwargs["headers"] = {**self._cabeceras, **(kwargs.get("headers") or {})}
+        return kwargs
+
     async def _request(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
         try:
-            return await self._http.request(method, url, **kwargs)
+            return await self._http.request(method, url, **self._con_cabeceras(kwargs))
         except httpx.HTTPError as exc:
             raise CrmUnreachable(f"error de red hacia el CRM: {exc}") from exc
 
@@ -486,7 +517,9 @@ class CrmClient:
         """
         limit = 16 * 1024 * 1024
         try:
-            async with self._http.stream("GET", f"{self.media_path}{media_id}", timeout=30.0) as resp:
+            async with self._http.stream(
+                "GET", f"{self.media_path}{media_id}", **self._con_cabeceras({"timeout": 30.0})
+            ) as resp:
                 if resp.status_code != 200:
                     raise CrmError(f"media devolvió {resp.status_code}")
                 data = bytearray()
@@ -499,4 +532,5 @@ class CrmClient:
             raise CrmUnreachable("error de red descargando media") from exc
 
     async def aclose(self) -> None:
-        await self._http.aclose()
+        if self._propietario:
+            await self._http.aclose()

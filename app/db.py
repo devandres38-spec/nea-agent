@@ -76,8 +76,12 @@ def _pending_send_desde_fila(row: Any) -> PendingSend:
 class PgStore(PgDispatchStore):
     """Store respaldado por Postgres (asyncpg)."""
 
-    def __init__(self, dsn: str, schema: str = "") -> None:
+    def __init__(self, dsn: str, schema: str = "", pool_max: int = 5) -> None:
         self._dsn = dsn
+        # 071 (D2) — `Settings.pool_max`: un turno por consumidor del
+        # despacho más los workers de fondo. El reclamo ya no retiene una
+        # conexión durante el turno, así que no hace falta más.
+        self._pool_max = max(2, pool_max)
         # 031 — Vacío = `public`, como siempre. Con nombre, las tablas de Nea
         # viven en ese esquema y la base se puede compartir con el CRM. El
         # nombre ya llega validado por `Settings` (minúsculas, dígitos y `_`).
@@ -92,7 +96,9 @@ class PgStore(PgDispatchStore):
 
     async def connect(self) -> None:
         if not self._schema:
-            self._pool = await asyncpg.create_pool(self._dsn, min_size=1, max_size=5)
+            self._pool = await asyncpg.create_pool(
+                self._dsn, min_size=2, max_size=self._pool_max
+            )
             return
         # El esquema tiene que existir ANTES de abrir el pool: con un
         # `search_path` que apunta a un esquema que no existe, Postgres acepta
@@ -105,8 +111,8 @@ class PgStore(PgDispatchStore):
             await conn.close()
         self._pool = await asyncpg.create_pool(
             self._dsn,
-            min_size=1,
-            max_size=5,
+            min_size=2,
+            max_size=self._pool_max,
             server_settings={"search_path": self._schema},
         )
         logger.info("tablas de Nea en el esquema %s", self._schema)
@@ -115,9 +121,16 @@ class PgStore(PgDispatchStore):
         """Aplica todas las migraciones en orden. Son idempotentes: re-correr es seguro."""
         files = sorted(migrations_dir.glob("*.sql"))
         async with self.pool.acquire() as conn:
-            for path in files:
-                logger.info("migración: aplicando %s", path.name)
-                await conn.execute(path.read_text(encoding="utf-8"))
+            # 071 (H9) — Con varias réplicas arrancando a la vez, dos
+            # `CREATE INDEX IF NOT EXISTS` pueden chocar. Una a la vez; el
+            # candado de sesión se suelta solo si el proceso muere.
+            await conn.execute("SELECT pg_advisory_lock(hashtextextended('nea:migrate', 0))")
+            try:
+                for path in files:
+                    logger.info("migración: aplicando %s", path.name)
+                    await conn.execute(path.read_text(encoding="utf-8"))
+            finally:
+                await conn.execute("SELECT pg_advisory_unlock(hashtextextended('nea:migrate', 0))")
 
     # -------------------------------------------------------------- dedup ---
 

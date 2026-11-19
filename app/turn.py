@@ -66,7 +66,9 @@ def _agent_tz(settings: Any) -> ZoneInfo:
 
 
 @asynccontextmanager
-async def conversation_lock(ctx: AppContext, identity: str) -> AsyncIterator[None]:
+async def conversation_lock(
+    ctx: AppContext, identity: str, org_id: str | None = None
+) -> AsyncIterator[None]:
     """Serializa los turnos de UNA conversación.
 
     El CRM agrupa la ráfaga antes de despacharla, pero nada le impide despachar
@@ -77,14 +79,23 @@ async def conversation_lock(ctx: AppContext, identity: str) -> AsyncIterator[Non
 
     Con el candado, el turno tardío espera, y al arrancar re-lee el contexto
     del CRM y el historial — que ya incluyen lo que hizo el turno anterior.
+
+    vocero-crm 071 (D1): entre despachos ese orden ya lo pone la cola (por
+    conversación, en Postgres, también entre réplicas). Este candado queda
+    para lo que corre por fuera de ella —el seguimiento y el olvido— y su
+    clave es (organización, identidad): la misma persona escribiéndole a dos
+    negocios son dos conversaciones.
     """
-    lock = ctx.turn_locks.get(identity)
+    if org_id is None:
+        org_id = (ctx.organizacion or ("", ""))[0]
+    clave = (org_id, identity)
+    lock = ctx.turn_locks.get(clave)
     if lock is None:
-        lock = ctx.turn_locks[identity] = asyncio.Lock()
+        lock = ctx.turn_locks[clave] = asyncio.Lock()
     # El conteo sube ANTES del await: quien ya tiene el objeto en mano queda
     # contado, así que el candado nunca se recicla debajo de un turno que
     # espera (y el diccionario no crece sin fin con cada lead histórico).
-    ctx.turn_lock_users[identity] = ctx.turn_lock_users.get(identity, 0) + 1
+    ctx.turn_lock_users[clave] = ctx.turn_lock_users.get(clave, 0) + 1
     if lock.locked():
         logger.info(
             "turno de %s en vuelo — el mensaje nuevo espera su turno", identity
@@ -93,12 +104,12 @@ async def conversation_lock(ctx: AppContext, identity: str) -> AsyncIterator[Non
         async with lock:
             yield
     finally:
-        remaining = ctx.turn_lock_users.get(identity, 1) - 1
+        remaining = ctx.turn_lock_users.get(clave, 1) - 1
         if remaining <= 0:
-            ctx.turn_lock_users.pop(identity, None)
-            ctx.turn_locks.pop(identity, None)
+            ctx.turn_lock_users.pop(clave, None)
+            ctx.turn_locks.pop(clave, None)
         else:
-            ctx.turn_lock_users[identity] = remaining
+            ctx.turn_lock_users[clave] = remaining
 
 
 @dataclass
