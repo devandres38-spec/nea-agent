@@ -20,7 +20,7 @@ from app import media
 from app.agenda import agenda_vigente
 from app.config import ZONA_POR_DEFECTO, canonical_identity
 from app.crm import CrmConflict, CrmError, CrmUnreachable
-from app.formato import a_whatsapp
+from app.formato import formatear_para
 from app.hostility import ALERT as HOSTILITY_ALERT, hostile_streak
 from app.llm import ImagenNoSoportada, LlmExhausted
 from app.stall import (
@@ -400,6 +400,10 @@ async def run_turn(
     # La zona es la del negocio de ESTE turno (la manda el CRM), no la de la
     # instancia: una Nea atiende a negocios de zonas distintas.
     tz = zona_del_negocio(context, _agent_tz(settings))
+    # 071 (D18): por dónde escribe el lead decide el formato de la respuesta.
+    canal = next((m.channel for m in inbound if m.channel), None) or (
+        (context.get("contact") or {}).get("channel")
+    )
     system = build_system_prompt(
         profile=profile,
         context=context,
@@ -409,7 +413,7 @@ async def run_turn(
         agenda=ctx.agenda_enabled,
         tz=tz,
         recordatorios=bool(getattr(ctx.crm, "supports_agenda_v2", False)),
-        canal=next((m.channel for m in inbound if m.channel), None),
+        canal=canal,
     )
     # Se traen más mensajes de los que ve el LLM: el candado de cierre cuenta
     # el hilo COMPLETO del lead, no solo la ventana de contexto.
@@ -498,7 +502,7 @@ async def run_turn(
     # tiene, o escribió una nota para sí mismo. Se le pide UNA vez más; si
     # vuelve a salir mal, silencio + handoff error, igual que un LLM caído.
     previos = [m.content for m in recientes if m.role == "assistant"]
-    motivo = _respuesta_invalida(final_text, previos)
+    motivo = _respuesta_invalida(final_text, previos, canal)
     if motivo is not None:
         logger.warning("turno %s: la respuesta %s — pido otra", identity, motivo)
         messages.append({"role": "assistant", "content": final_text})
@@ -507,7 +511,7 @@ async def run_turn(
             final_text = await _tool_loop(ctx, messages, runtime)
         except LlmExhausted:
             final_text = None
-        if final_text is None or _respuesta_invalida(final_text, previos):
+        if final_text is None or _respuesta_invalida(final_text, previos, canal):
             logger.error("turno %s: la segunda respuesta tampoco sirve — silencio + handoff error", identity)
             await _safe_handoff(ctx, str(crm_conv_id), "error", turno)
             await ctx.store.update_conversation(conv.id, phase="cerrada", followup_due_at=None)
@@ -524,7 +528,7 @@ async def run_turn(
     # el formato que el lead ve roto (app/formato.py).
     sent = False
     if final_text and final_text.strip():
-        final_text = a_whatsapp(runtime.finalize_reply(final_text.strip()))
+        final_text = formatear_para(runtime.finalize_reply(final_text.strip()), canal)
     if final_text and final_text.strip():
         sent = await _send(ctx, conv.id, str(crm_conv_id), final_text)
         if sent:
@@ -735,13 +739,15 @@ async def _fetch_context(ctx: AppContext, identity: str) -> dict[str, Any] | Non
 
 REPETICION_MIN = 40
 CORRIGE_RESPUESTA = (
-    "Ese texto NO se le envió al lead: {motivo}. Escribe ahora el mensaje de "
-    "WhatsApp que responde a su ÚLTIMO mensaje, en tu voz y sin repetir nada "
-    "que ya le hayas escrito."
+    "Ese texto NO se le envió al lead: {motivo}. Escribe ahora el mensaje "
+    "que responde a su ÚLTIMO mensaje, en tu voz y sin repetir nada que ya le "
+    "hayas escrito."
 )
 
 
-def _respuesta_invalida(texto: str | None, previos: list[str]) -> str | None:
+def _respuesta_invalida(
+    texto: str | None, previos: list[str], canal: str | None = None
+) -> str | None:
     """Por qué este texto no puede salir, o None si puede.
 
     Dos fallos que el lead SÍ ve y que ningún prompt evita del todo: repetirle
@@ -755,13 +761,13 @@ def _respuesta_invalida(texto: str | None, previos: list[str]) -> str | None:
     # de Markdown suelto («[Agenda](https://…)») no pasa por nota entre
     # corchetes, y una repetición no se escapa por traer otras negritas que
     # el mensaje ya guardado (que se guardó convertido).
-    plano = " ".join(a_whatsapp(texto).split())
+    plano = " ".join(formatear_para(texto, canal).split())
     if re.fullmatch(r"[(\[].*[)\]]", plano):
         return "era una nota interna entre paréntesis"
     # Un «¡Va!» o un «Perfecto 👍» pueden repetirse sin que nadie lo note; un
     # mensaje con contenido repetido entero, no.
     if len(plano) >= REPETICION_MIN and any(
-        plano == " ".join(a_whatsapp(p).split()) for p in previos
+        plano == " ".join(formatear_para(p, canal).split()) for p in previos
     ):
         return "repetía palabra por palabra un mensaje que ya le enviaste"
     return None
