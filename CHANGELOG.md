@@ -6,6 +6,19 @@ Qué cambia en cada versión de Nea y qué hacer al actualizar. Cada tag
 
 ## Sin publicar
 
+### Ficha según el negocio (vocero-crm 072, ronda A)
+
+- **`update_ficha` con los campos del negocio.** Si el CRM manda
+  `fichaSchema` en el contexto (Ajustes → Ficha), la herramienta ofrece esos
+  campos con su tipo (número, sí/no, fecha `AAAA-MM-DD`, lista como `enum`) y
+  `notas`. Sin esquema, el de siempre: los dorados de la 071 no cambian.
+- **Datos por reunir.** Con esquema, el contexto del turno le recuerda al
+  modelo los 3 siguientes obligatorios que faltan, en orden y sin condicionar
+  una cita. Con la ficha apagada para el negocio, no aparece.
+- **Ignorados.** Si el CRM descarta un valor por su tipo (`ignored`), el
+  modelo lo sabe y repregunta una vez.
+- Actualizar: redesplegar. Contra un CRM 2.11 nada cambia.
+
 ### Producción (vocero-crm 071, Ronda 1)
 
 - **Turnos concurrentes.** `DISPATCH_CONCURRENCY` (8) consumidores; la cola
