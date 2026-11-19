@@ -45,6 +45,8 @@ async def test_por_defecto():
         "mode": "estándar",
         "llm": "propia",
         "webhookDeMeta": {"ultimoEn": None},
+        # 071 (D9): las colas, para quien opera.
+        "queues": {"inboxPending": 0, "inboxStarted": 0, "pendingSends": 0, "oldestInboxSeconds": 0},
     }
 
 

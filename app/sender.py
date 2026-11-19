@@ -15,6 +15,7 @@ from datetime import datetime, timedelta
 
 from app.crm import CrmConflict, CrmError, CrmRechazo
 from app.multiorg import contexto_del_turno, ctx_de_organizacion
+from app.observabilidad import contexto_de_log
 from app.state import AppContext, PendingSend, utcnow
 
 logger = logging.getLogger("nea.sender")
@@ -73,7 +74,12 @@ class SenderWorker:
                 await self._ctx.store.mark_pending_send_abandoned(item.id)
                 await self._handoff(ctx, item.crm_conversation_id)
                 continue
-            await self._attempt(ctx, item, now)
+            with contexto_de_log(
+                org=item.organization_slug or item.organization_id or None,
+                dispatch=item.dispatch_id or None,
+                conversation=item.crm_conversation_id or None,
+            ):
+                await self._attempt(ctx, item, now)
 
     async def _attempt(
         self, ctx: AppContext, item: PendingSend, now: datetime

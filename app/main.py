@@ -29,6 +29,7 @@ from app.db import PgStore
 from app.followup import FollowupWorker
 from app.llm import LlmPorElCrm, OpenAiLlm
 from app.mantenimiento import MantenimientoWorker
+from app.observabilidad import configurar_logs
 from app.multiorg import (
     CrmSinOrganizacion,
     LlmSinOrganizacion,
@@ -171,6 +172,8 @@ def create_app(ctx: AppContext | None = None) -> FastAPI:
         own_resources = app.state.ctx is None
         if own_resources:
             settings = Settings()
+            # 071 (D8): JSON con org/despacho/conversación y teléfonos tapados.
+            configurar_logs(settings.formato_de_logs)
             _avisar_obsoletas()
             store = PgStore(
                 settings.database_url, settings.database_schema, settings.pool_max
@@ -294,7 +297,17 @@ def create_app(ctx: AppContext | None = None) -> FastAPI:
                     await c.registro.aclose()
                 await c.store.aclose()
 
-    app = FastAPI(title="Nea — agente de agendamiento para WhatsApp", lifespan=lifespan)
+    # 071 (D10): sin /docs, /redoc ni /openapi.json salvo NEA_DOCS=1. Nadie
+    # los usa (el contrato vive en el CRM) y en producción solo enseñaban la
+    # superficie a quien escaneara.
+    docs = os.environ.get("NEA_DOCS", "").strip() == "1"
+    app = FastAPI(
+        title="Nea — agente de agendamiento para WhatsApp",
+        lifespan=lifespan,
+        docs_url="/docs" if docs else None,
+        redoc_url="/redoc" if docs else None,
+        openapi_url="/openapi.json" if docs else None,
+    )
     app.state.ctx = ctx
     # La única entrada, en los dos modos (spec 031). Y el webhook de Meta, que
     # ya no se recibe, contesta 503 para que Meta reintente mientras quien
@@ -321,6 +334,18 @@ def create_app(ctx: AppContext | None = None) -> FastAPI:
                 {"status": "degraded", "db": "error", **identidad}, status_code=503
             )
         cuerpo: dict[str, Any] = {"status": "ok", "db": "ok", **identidad}
+        # 071 (D9) — Las colas, para quien opera. Best-effort con tope de 1 s:
+        # si la consulta falla o tarda, `null`, y el código HTTP lo sigue
+        # decidiendo solo la base (`ping`). El CRM lee como mucho 4 KB de este
+        # cuerpo (`salud.ts`): tiene que seguir siendo chico.
+        metricas = getattr(c.store, "queue_metrics", None)
+        cuerpo["queues"] = None
+        if callable(metricas):
+            try:
+                async with asyncio.timeout(1.0):
+                    cuerpo["queues"] = await metricas()
+            except Exception:
+                logger.warning("health: no pude leer las colas — queues: null")
         # 031 — ¿Meta le sigue mandando el webhook a Nea? Si sí, alguien
         # actualizó sin devolvérselo al CRM (app/webhook_retirado.py).
         ultimo = c.webhook_meta_ultimo

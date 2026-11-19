@@ -25,6 +25,7 @@ CRM deja pensar y consultar huecos sin tocar nada.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import secrets
@@ -39,6 +40,7 @@ from app.crm_brains import BrainsCrmClient, _perfil_desde_contexto
 from app.dispatch import firma_valida
 from app.http_limits import limited_body
 from app.multiorg import organizacion_del_despacho
+from app.observabilidad import contexto_de_log
 from app.profile import ProfileProvider
 from app.state import AppContext, InboundMessage, MemoryStore
 from app.turn import handle_flush
@@ -260,7 +262,32 @@ async def recibir(request: Request) -> Any:
     motivo = validar(payload)
     if motivo is not None:
         return JSONResponse({"error": "ensayo inválido", "campo": motivo}, status_code=422)
-    return await ensayar(ctx, payload)
+    # 071 (D11): pocos a la vez y sin cola. Esperar no le sirve a nadie —el
+    # dueño está mirando la pantalla— y apilarlos le quitaría turnos a los
+    # clientes de verdad.
+    cupos = _cupos(ctx)
+    if cupos.locked():
+        logger.info("ensayo rechazado: %d en curso — 429", ctx.settings.ensayo_concurrency)
+        return JSONResponse({"error": "ocupado"}, status_code=429)
+    org = organizacion_del_despacho(payload)
+    async with cupos:
+        with contexto_de_log(
+            org=org[1] if org else None,
+            conversation=str(payload["context"]["conversation"]["id"]),
+        ):
+            return await ensayar(ctx, payload)
+
+
+_CUPOS: dict[int, tuple[int, asyncio.Semaphore]] = {}
+
+
+def _cupos(ctx: AppContext) -> asyncio.Semaphore:
+    """El semáforo de ensayos de esta app (uno por proceso y por contexto)."""
+    n = ctx.settings.ensayo_concurrency
+    actual = _CUPOS.get(id(ctx.settings))
+    if actual is None or actual[0] != n:
+        actual = _CUPOS[id(ctx.settings)] = (n, asyncio.Semaphore(n))
+    return actual[1]
 
 
 async def ensayar(ctx: AppContext, payload: dict[str, Any]) -> dict[str, Any]:
@@ -314,8 +341,9 @@ async def ensayar(ctx: AppContext, payload: dict[str, Any]) -> dict[str, Any]:
     )
 
     resultado: list[dict[str, Any]] = []
-    try:
-        for i, texto in enumerate(payload["turns"]):
+
+    async def correr() -> None:
+        for texto in payload["turns"]:
             desde = len(crm.eventos)
             mensaje = InboundMessage(
                 wa_message_id=f"ensayo_{secrets.token_hex(6)}",
@@ -337,9 +365,25 @@ async def ensayar(ctx: AppContext, payload: dict[str, Any]) -> dict[str, Any]:
                     "actions": [e for e in eventos if e["type"] != "message"],
                 }
             )
+
+    agotado = False
+    try:
+        # 071 (D11): un ensayo no puede retener la petición (ni un cupo) sin
+        # fin. Al pasarse, devuelve los turnos que alcanzó a correr.
+        async with asyncio.timeout(ctx.settings.ensayo_timeout_seconds):
+            await correr()
+    except TimeoutError:
+        agotado = True
+        logger.warning(
+            "ensayo de %s: se pasó de %.0f s — devuelvo %d turno(s)",
+            slug, ctx.settings.ensayo_timeout_seconds, len(resultado),
+        )
     finally:
         await crm.aclose()
         await llm._client.close()
+
+    if agotado:
+        return {"ok": False, "error": "tiempo_agotado", "simulated": True, "turns": resultado}
 
     uso = getattr(llm, "usage", {}) or {}
     logger.info(

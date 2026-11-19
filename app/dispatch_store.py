@@ -123,6 +123,24 @@ class PgDispatchStore:
         )
 
 
+    async def queue_metrics(self) -> dict[str, int]:
+        """071 (D9) — Para `/health`: cuántos esperan, cuántos corren y la
+        antigüedad del más viejo sin terminar. Usa los índices parciales."""
+        row = await self.pool.fetchrow("""
+          SELECT count(*) FILTER (WHERE state <> 'started') AS pending,
+                 count(*) FILTER (WHERE state = 'started') AS started,
+                 COALESCE(EXTRACT(EPOCH FROM now() - min(created_at)), 0)::bigint AS oldest
+          FROM dispatch_inbox WHERE state <> 'done'""")
+        sends = await self.pool.fetchval("""SELECT count(*) FROM pending_send
+          WHERE delivered_at IS NULL AND abandoned_at IS NULL""")
+        return {
+            "inboxPending": int(row["pending"]),
+            "inboxStarted": int(row["started"]),
+            "pendingSends": int(sends),
+            "oldestInboxSeconds": int(row["oldest"]),
+        }
+
+
 class MemoryDispatchStore:
     """La misma semántica que Postgres, en memoria (solo pruebas)."""
 
@@ -198,3 +216,16 @@ class MemoryDispatchStore:
                     organization_id=key[0], conversation_id=row["conversation_id"],
                 )
         yield job
+
+    async def queue_metrics(self) -> dict[str, int]:
+        filas = [r for r in self._inbox().values() if r["state"] != "done"]
+        pendientes = [
+            p for p in getattr(self, "pending_sends", {}).values()
+            if p.delivered_at is None and p.abandoned_at is None
+        ]
+        return {
+            "inboxPending": sum(1 for r in filas if r["state"] != "started"),
+            "inboxStarted": sum(1 for r in filas if r["state"] == "started"),
+            "pendingSends": len(pendientes),
+            "oldestInboxSeconds": 0,
+        }

@@ -16,6 +16,7 @@ from typing import Any
 
 from app.crm import CrmRechazo
 from app.multiorg import organizacion_del_despacho
+from app.observabilidad import contexto_de_log
 
 logger = logging.getLogger("nea.dispatch.worker")
 
@@ -71,8 +72,16 @@ async def drain_one(ctx: Any, en_vuelo: Counter[str] | None = None) -> bool:
             return False
         if en_vuelo is not None:
             en_vuelo[job.organization_id] += 1
+        org = organizacion_del_despacho(job.payload)
         try:
-            return await _atender(ctx, job)
+            # 071 (D8): cada línea del turno dice de qué negocio, despacho y
+            # conversación es. La tarea del turno hereda este contexto.
+            with contexto_de_log(
+                org=(org[1] if org else job.organization_id) or None,
+                dispatch=str(job.payload.get("dispatchId") or "") or None,
+                conversation=job.conversation_id or None,
+            ):
+                return await _atender(ctx, job)
         finally:
             if en_vuelo is not None:
                 en_vuelo[job.organization_id] -= 1

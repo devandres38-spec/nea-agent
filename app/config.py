@@ -264,6 +264,18 @@ class Settings(BaseSettings):
     # `/health` y la recepción del despacho.
     db_pool_max: int = Field(default=0, ge=0, le=200)
 
+    # ── Observabilidad (071, D8) ─────────────────────────────────────────
+    # `json` o `text`. Vacía = `json` en cloud (para buscar por negocio y por
+    # despacho) y `text` en una Nea de un solo negocio, como siempre.
+    log_format: str = Field(default="", pattern=r"^(json|text)?$")
+
+    # ── Ensayo (071, D11) ────────────────────────────────────────────────
+    # Ensayos a la vez por proceso: los pide el dueño desde el CRM y cada uno
+    # son hasta 12 turnos. Sin hueco, 429 `ocupado` en el acto.
+    ensayo_concurrency: int = Field(default=2, ge=1)
+    # Tope de un ensayo entero; al pasarse devuelve lo que alcanzó a correr.
+    ensayo_timeout_seconds: float = Field(default=120.0, gt=0)
+
     # ── Retención (071, D7) ──────────────────────────────────────────────
     # Días que se guardan los despachos terminados (llevan los mensajes del
     # cliente tal cual) y las marcas de deduplicación. Mínimo 2: el CRM puede
@@ -271,6 +283,10 @@ class Settings(BaseSettings):
     retention_days: int = Field(default=14, ge=2)
     # Días que se guardan los envíos diferidos ya entregados o abandonados.
     pending_retention_days: int = Field(default=30, ge=1)
+
+    @property
+    def formato_de_logs(self) -> str:
+        return self.log_format or ("json" if self.cloud_mode else "text")
 
     @property
     def pool_max(self) -> int:

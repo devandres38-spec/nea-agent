@@ -6,6 +6,35 @@ Qué cambia en cada versión de Nea y qué hacer al actualizar. Cada tag
 
 ## Sin publicar
 
+### Producción (vocero-crm 071, Ronda 1)
+
+- **Turnos concurrentes.** `DISPATCH_CONCURRENCY` (8) consumidores; la cola
+  serializa por **conversación** con lease en Postgres (antes: un advisory
+  lock por negocio que retenía una conexión todo el turno, así que un negocio
+  contestaba de uno en uno). Un negocio ocupa como mucho
+  `DISPATCH_MAX_POR_ORG` (3). Pool de Postgres = concurrencia + 4
+  (`DB_POOL_MAX`). Funciona igual con varias réplicas.
+- **Estado por turno.** Cada turno tiene su copia del contexto y su cliente
+  del CRM; todos comparten un solo pool HTTP hacia el CRM. Se acabaron los
+  diccionarios por conversación que crecían sin fin.
+- **`X-Vocero-Organization` lleva el id** en multiorg y en el ensayo: un
+  cambio de subdominio del negocio ya no deja muda a Nea.
+- **Agenda por negocio** en multiorg (`agent.agendaEnabled` del contexto, o
+  una sonda por organización): el 404 de un negocio ya no apaga la de todos.
+- **Envío diferido** reservado por lease (sin duplicados entre réplicas) y un
+  `401/403` lo abandona sin reintentar 24 h.
+- **Retención**: cada hora se purgan despachos terminados y marcas de
+  deduplicación de más de `RETENTION_DAYS` (14) y envíos cerrados de más de
+  `PENDING_RETENTION_DAYS` (30).
+- **Imágenes**: van al último mensaje del cliente (antes, con una alerta de
+  hostilidad o de cierre, el turno fallaba) y un modelo sin visión ya no
+  termina en silencio + handoff `error`: se contesta con honestidad.
+- **Observabilidad**: logs JSON en cloud (`LOG_FORMAT`) con `org`,
+  `dispatch` y `conversation`; teléfonos tapados; `/health` con `queues`.
+- **Superficie**: `/docs`, `/redoc` y `/openapi.json` apagados salvo
+  `NEA_DOCS=1`; `/vocero/ensayo` con cupo (`ENSAYO_CONCURRENCY`, 429) y tope
+  (`ENSAYO_TIMEOUT_SECONDS`).
+
 ### Corregido
 
 - **Un negocio reasignado ya no tumba a los demás de la misma Nea**
