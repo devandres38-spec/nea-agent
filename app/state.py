@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import itertools
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Protocol
 from contextlib import AbstractAsyncContextManager
 from app.dispatch_store import DispatchJob, MemoryDispatchStore
@@ -214,6 +214,16 @@ class Store(Protocol):
         dispatch_id: str = "",
     ) -> int: ...
     async def due_pending_sends(self, now: datetime) -> list[PendingSend]: ...
+    async def claim_pending_sends(
+        self, now: datetime, limit: int = 50, lease_seconds: int = 120
+    ) -> list[PendingSend]:
+        """Los vencidos, reservados (lease) para quien los reclama (071, D6)."""
+        ...
+    async def purgar(
+        self, dias: int, dias_envios: int, lote: int = 1000
+    ) -> dict[str, int] | None:
+        """Retención (071, D7). None = otra réplica está purgando."""
+        ...
     async def mark_pending_send_delivered(self, pending_id: int) -> None: ...
     async def mark_pending_send_abandoned(self, pending_id: int) -> None: ...
     async def reschedule_pending_send(
@@ -383,6 +393,31 @@ class MemoryStore(MemoryDispatchStore):
             if p.delivered_at is None and p.abandoned_at is None
             and p.next_retry_at <= now
         ]
+
+    async def claim_pending_sends(
+        self, now: datetime, limit: int = 50, lease_seconds: int = 120
+    ) -> list[PendingSend]:
+        vencidos = (await self.due_pending_sends(now))[:limit]
+        for p in vencidos:
+            p.next_retry_at = now + timedelta(seconds=lease_seconds)
+        return vencidos
+
+    async def purgar(
+        self, dias: int, dias_envios: int, lote: int = 1000
+    ) -> dict[str, int] | None:
+        limite = utcnow() - timedelta(days=dias)
+        limite_envios = utcnow() - timedelta(days=dias_envios)
+        inbox = self._inbox()
+        viejas = [k for k, r in inbox.items()
+                  if r["state"] == "done" and r.get("done_at", utcnow()) < limite]
+        for k in viejas:
+            del inbox[k]
+        cerrados = [pid for pid, p in self.pending_sends.items()
+                    if (p.delivered_at or p.abandoned_at) and p.created_at < limite_envios]
+        for pid in cerrados:
+            del self.pending_sends[pid]
+        # `processed` es un set sin fecha en memoria: nada que purgar aquí.
+        return {"dispatch_inbox": len(viejas), "processed_message": 0, "pending_send": len(cerrados)}
 
     async def mark_pending_send_delivered(self, pending_id: int) -> None:
         self.pending_sends[pending_id].delivered_at = utcnow()

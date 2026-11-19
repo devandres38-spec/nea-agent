@@ -256,3 +256,57 @@ def test_el_mapeo_de_pending_send_no_se_deja_ninguna_columna():
         assert getattr(pendiente, campo.name) == fila[campo.name], (
             f"el mapeo no lee {campo.name}"
         )
+
+
+# ── 071 (D6): reserva por lease y 401/403 terminal ────────────────────────
+
+
+async def test_071_un_rechazo_de_credencial_abandona_sin_reintento_ni_handoff(respx_mock):
+    """H7: `CrmRechazo` hereda de `CrmError` y antes se reintentaba 24 h,
+    sumando cada intento al límite del CRM."""
+    ctx = _ctx_cerebro()
+    conv = await ctx.store.get_or_create_conversation(IDENTITY, "org_a", "negocio-a")
+    pid = await ctx.store.enqueue_pending_send(
+        conv.id, CRM_CONV_ID, "texto", "org_a", "negocio-a", "dsp_1"
+    )
+    enviados = respx_mock.post(f"{CRM_URL}/api/brains/messages").mock(
+        return_value=httpx.Response(401, json={"error": "no_autorizado"})
+    )
+    handoff = respx_mock.post(f"{CRM_URL}/api/brains/handoff").mock(
+        return_value=httpx.Response(200, json={})
+    )
+    await SenderWorker(ctx).tick()
+
+    item = ctx.store.pending_sends[pid]
+    assert enviados.call_count == 1
+    assert item.abandoned_at is not None and item.attempts == 0
+    assert handoff.call_count == 0
+    await ctx.crm.aclose()
+
+
+async def test_071_lo_reservado_por_un_worker_no_lo_ve_otro():
+    store = MemoryStore()
+    conv = await store.get_or_create_conversation(IDENTITY)
+    pid = await store.enqueue_pending_send(conv.id, CRM_CONV_ID, "texto")
+    ahora = utcnow()
+    assert [p.id for p in await store.claim_pending_sends(ahora)] == [pid]
+    assert await store.claim_pending_sends(ahora) == []  # la otra réplica
+    # Si el worker muere, el lease vence y vuelve solo.
+    assert [p.id for p in await store.claim_pending_sends(ahora + timedelta(minutes=3))] == [pid]
+
+
+async def test_071_el_sender_reserva_antes_de_enviar(respx_mock):
+    ctx = make_ctx()
+    conv = await ctx.store.get_or_create_conversation(IDENTITY)
+    await ctx.store.enqueue_pending_send(conv.id, CRM_CONV_ID, "texto")
+    llamado = []
+
+    async def reclamar(now, limit=50, lease_seconds=120):
+        llamado.append(now)
+        return []
+
+    ctx.store.claim_pending_sends = reclamar  # type: ignore[method-assign]
+    respx_mock.post(f"{CRM_URL}/api/bot/messages").mock(return_value=httpx.Response(200, json={}))
+    await SenderWorker(ctx).tick()
+    assert len(llamado) == 1
+    await ctx.crm.aclose()

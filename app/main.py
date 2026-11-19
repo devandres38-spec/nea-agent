@@ -28,6 +28,7 @@ from app.dispatch_worker import run as run_dispatch_worker
 from app.db import PgStore
 from app.followup import FollowupWorker
 from app.llm import LlmPorElCrm, OpenAiLlm
+from app.mantenimiento import MantenimientoWorker
 from app.multiorg import (
     CrmSinOrganizacion,
     LlmSinOrganizacion,
@@ -264,6 +265,8 @@ def create_app(ctx: AppContext | None = None) -> FastAPI:
             asyncio.create_task(run_dispatch_worker(c), name="dispatch-worker"),
             asyncio.create_task(followup_worker.run(), name="followup-worker"),
             asyncio.create_task(sender_worker.run(), name="sender-worker"),
+            # 071 (D7): retención en lotes, una vez por hora.
+            asyncio.create_task(MantenimientoWorker(c).run(), name="mantenimiento"),
         ]
         logger.info(
             "Nea arriba (%s): despacho + seguimiento + envíos pendientes corriendo",

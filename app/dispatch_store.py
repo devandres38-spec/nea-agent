@@ -186,6 +186,7 @@ class MemoryDispatchStore:
                     if row.get("owner") != owner or row["state"] != "started":
                         raise RuntimeError("dispatch ownership lost")
                     row["state"] = "done"
+                    row["done_at"] = datetime.now(timezone.utc)
 
                 async def heartbeat(row: dict[str, Any] = row, owner: str = owner) -> None:
                     if row.get("owner") != owner or row["state"] != "started":

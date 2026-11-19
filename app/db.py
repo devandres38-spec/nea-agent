@@ -368,6 +368,75 @@ class PgStore(PgDispatchStore):
         )
         return [_pending_send_desde_fila(r) for r in rows]
 
+    async def claim_pending_sends(
+        self, now: datetime, limit: int = 50, lease_seconds: int = 120
+    ) -> list[PendingSend]:
+        """071 (D6) — Los vencidos, RESERVADOS para este worker.
+
+        Un `FOR UPDATE SKIP LOCKED` en un `SELECT` suelto no sirve aquí: el
+        pool corre en autocommit y el candado muere con la sentencia, así que
+        dos réplicas leerían las mismas filas. Se reservan empujando
+        `next_retry_at` (un lease): la otra réplica ya no las ve vencidas, y si
+        este proceso muere vuelven solas al vencer.
+        """
+        rows = await self.pool.fetch(
+            """
+            UPDATE pending_send SET next_retry_at = now() + make_interval(secs => $3)
+            WHERE id IN (
+              SELECT id FROM pending_send
+              WHERE delivered_at IS NULL AND abandoned_at IS NULL AND next_retry_at <= $1
+              ORDER BY id
+              FOR UPDATE SKIP LOCKED
+              LIMIT $2)
+            RETURNING *
+            """,
+            now,
+            limit,
+            float(lease_seconds),
+        )
+        return sorted((_pending_send_desde_fila(r) for r in rows), key=lambda p: p.id)
+
+    async def purgar(
+        self, dias: int, dias_envios: int, lote: int = 1000
+    ) -> dict[str, int] | None:
+        """071 (D7) — Borra lo viejo en lotes pequeños. None = otra réplica purga.
+
+        Cada lote es su propia transacción y toma un candado de transacción:
+        dos réplicas no purgan a la vez, y el despacho nunca espera más que lo
+        que tarda un lote de `lote` filas.
+        """
+        consultas = {
+            "dispatch_inbox": """DELETE FROM dispatch_inbox WHERE ctid IN (
+                SELECT ctid FROM dispatch_inbox
+                WHERE state = 'done' AND updated_at < now() - make_interval(days => $1)
+                LIMIT $2)""",
+            "processed_message": """DELETE FROM processed_message WHERE ctid IN (
+                SELECT ctid FROM processed_message
+                WHERE processed_at < now() - make_interval(days => $1)
+                LIMIT $2)""",
+            "pending_send": """DELETE FROM pending_send WHERE ctid IN (
+                SELECT ctid FROM pending_send
+                WHERE (delivered_at IS NOT NULL OR abandoned_at IS NOT NULL)
+                  AND created_at < now() - make_interval(days => $1)
+                LIMIT $2)""",
+        }
+        borradas = {tabla: 0 for tabla in consultas}
+        for tabla, sql in consultas.items():
+            antiguedad = dias_envios if tabla == "pending_send" else dias
+            while True:
+                async with self.pool.acquire() as conn:
+                    async with conn.transaction():
+                        if not await conn.fetchval(
+                            "SELECT pg_try_advisory_xact_lock(hashtextextended('nea:purga', 0))"
+                        ):
+                            return None
+                        resultado = await conn.execute(sql, antiguedad, lote)
+                n = int(resultado.split()[-1])
+                borradas[tabla] += n
+                if n < lote:
+                    break
+        return borradas
+
     async def mark_pending_send_delivered(self, pending_id: int) -> None:
         await self.pool.execute(
             "UPDATE pending_send SET delivered_at = now() WHERE id = $1", pending_id

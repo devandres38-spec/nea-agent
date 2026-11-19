@@ -792,3 +792,57 @@ async def test_071_migrar_en_paralelo_no_choca(base_de_prueba):
     finally:
         await a.aclose()
         await b.aclose()
+
+
+# ─────────────────────────── 071 (D6, D7): sender por lease y retención ───
+
+
+async def test_071_dos_replicas_no_reservan_el_mismo_envio(store):
+    conv = await store.get_or_create_conversation(IDENTITY, "org_a", "a")
+    ids = [await store.enqueue_pending_send(conv.id, "cv_1", f"t{n}") for n in range(5)]
+    otra = PgStore(store._dsn)
+    await otra.connect()
+    try:
+        ahora = await _ahora(store)
+        a, b = await asyncio.gather(store.claim_pending_sends(ahora, limit=3), otra.claim_pending_sends(ahora, limit=3))
+    finally:
+        await otra.aclose()
+    vistos = [p.id for p in a] + [p.id for p in b]
+    assert sorted(vistos) == ids  # todos, y ninguno dos veces
+    assert await store.claim_pending_sends(ahora) == []  # reservados
+
+
+async def test_071_purga_respeta_retencion_y_lo_vivo(store):
+    from tests.test_pg_store import _d071
+    for n in (1, 2, 3):
+        await store.enqueue_dispatch("org_a", _d071("org_a", f"cv_{n}", n))
+    for _ in range(2):
+        async with store.claim_dispatch() as job:
+            await job.finish()
+    await store.pool.execute(
+        "UPDATE dispatch_inbox SET updated_at = now() - interval '20 days' WHERE state='done' AND conversation_id='cv_1'")
+    await store.mark_processed("msg:viejo")
+    await store.mark_processed("msg:nuevo")
+    await store.pool.execute(
+        "UPDATE processed_message SET processed_at = now() - interval '20 days' WHERE wa_message_id='msg:viejo'")
+    conv = await store.get_or_create_conversation(IDENTITY, "org_a", "a")
+    cerrado = await store.enqueue_pending_send(conv.id, "cv_1", "a")
+    abierto = await store.enqueue_pending_send(conv.id, "cv_1", "b")
+    await store.mark_pending_send_delivered(cerrado)
+    await store.pool.execute("UPDATE pending_send SET created_at = now() - interval '40 days'")
+
+    borradas = await store.purgar(14, 30, lote=1)  # lote 1: varias vueltas
+
+    assert borradas == {"dispatch_inbox": 1, "processed_message": 1, "pending_send": 1}
+    quedan = {r["conversation_id"] for r in await store.pool.fetch("SELECT conversation_id FROM dispatch_inbox")}
+    assert quedan == {"cv_2", "cv_3"}  # el reciente y el que sigue en cola
+    assert await store.already_processed(["msg:viejo", "msg:nuevo"]) == {"msg:nuevo"}
+    assert [r["id"] for r in await store.pool.fetch("SELECT id FROM pending_send")] == [abierto]
+    assert await store.pool.fetchval("SELECT to_regclass('relay_queue') IS NOT NULL")
+
+
+async def test_071_dos_purgas_a_la_vez_no_se_pisan(store):
+    async with store.pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.fetchval("SELECT pg_advisory_xact_lock(hashtextextended('nea:purga', 0))")
+            assert await store.purgar(14, 30) is None

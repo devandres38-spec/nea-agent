@@ -13,7 +13,7 @@ import asyncio
 import logging
 from datetime import datetime, timedelta
 
-from app.crm import CrmConflict, CrmError
+from app.crm import CrmConflict, CrmError, CrmRechazo
 from app.multiorg import contexto_del_turno, ctx_de_organizacion
 from app.state import AppContext, PendingSend, utcnow
 
@@ -39,7 +39,14 @@ class SenderWorker:
 
     async def tick(self, now: datetime | None = None) -> None:
         now = now or utcnow()
-        for item in await self._ctx.store.due_pending_sends(now):
+        # 071 (D6): reservados para este worker (lease), no solo leídos: con
+        # dos réplicas, leer sin reservar entregaba dos veces la misma fila.
+        reclamar = getattr(self._ctx.store, "claim_pending_sends", None)
+        pendientes = (
+            await reclamar(now) if callable(reclamar)
+            else await self._ctx.store.due_pending_sends(now)
+        )
+        for item in pendientes:
             # Con quién hay que hablar para ESTA fila. En una Nea de un solo
             # negocio es siempre el mismo; en una multi-organización, el de
             # la organización que dejó el envío pendiente.
@@ -80,6 +87,20 @@ class SenderWorker:
             registrar_despacho(item.crm_conversation_id, item.dispatch_id)
         try:
             await ctx.crm.send_message(item.crm_conversation_id, item.content)
+        except CrmRechazo as exc:
+            # 071 (D6, H7): el CRM ya no acepta la credencial de este negocio
+            # (reasignado, pausado, rotado, suspendido). Terminal, como en la
+            # cola del despacho (C-1 de la 070): ni reintento —cada intento
+            # suma al límite del CRM— ni handoff, que tampoco tendría
+            # credencial. El mensaje del cliente sigue en la bandeja del CRM.
+            logger.warning(
+                "sender: pending %d — el CRM rechazó la credencial (%s) de %s — abandonado, sin handoff",
+                item.id,
+                exc.status,
+                item.organization_slug or item.organization_id or "este negocio",
+            )
+            await ctx.store.mark_pending_send_abandoned(item.id)
+            return
         except CrmConflict as exc:
             # ai_paused / window_closed: ya no procede — silencio respetuoso.
             logger.info(
@@ -111,5 +132,7 @@ class SenderWorker:
     async def _handoff(self, ctx: AppContext, crm_conv_id: str) -> None:
         try:
             await ctx.crm.post_handoff(crm_conv_id, "error")
+        except CrmRechazo as exc:
+            logger.warning("sender: sin credencial para el handoff (%s) — solo log", exc.status)
         except CrmError as exc:
             logger.error("sender: no pude registrar el handoff tras abandono: %s", exc)

@@ -264,6 +264,14 @@ class Settings(BaseSettings):
     # `/health` y la recepción del despacho.
     db_pool_max: int = Field(default=0, ge=0, le=200)
 
+    # ── Retención (071, D7) ──────────────────────────────────────────────
+    # Días que se guardan los despachos terminados (llevan los mensajes del
+    # cliente tal cual) y las marcas de deduplicación. Mínimo 2: el CRM puede
+    # reintentar un despacho durante 24 h.
+    retention_days: int = Field(default=14, ge=2)
+    # Días que se guardan los envíos diferidos ya entregados o abandonados.
+    pending_retention_days: int = Field(default=30, ge=1)
+
     @property
     def pool_max(self) -> int:
         if self.db_pool_max:
