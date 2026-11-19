@@ -14,6 +14,7 @@ import copy
 from typing import Any
 
 from app import tools as t
+from app.herramientas.ficha import esquema_dinamico
 from app.herramientas.registro import Capacidades, Registro, ToolSpec
 
 COORDINATION_CONSENT_SCHEMA: dict[str, Any] = {
@@ -43,13 +44,14 @@ def _de_tools(nombre: str) -> dict[str, Any]:
 
 
 def esquema_de_ficha(context: dict[str, Any] | None = None) -> dict[str, Any]:
-    """El esquema de `update_ficha` (D20).
+    """El esquema de `update_ficha` (D20): el único lugar que lo decide.
 
-    Hoy, el B2B fijo de siempre. La 072 lo derivará de los campos
-    personalizados del negocio (`contact.customFields` y su esquema) sin
-    tocar el turno: este es el único lugar que lo decide.
+    vocero-crm 072 (D11): con `fichaSchema` en el contexto, los campos del
+    negocio + `notas` (`app/herramientas/ficha.py`); sin él, el B2B fijo de
+    siempre, byte a byte.
     """
-    return _de_tools("update_ficha")
+    base = _de_tools("update_ficha")
+    return esquema_dinamico(base, context) or base
 
 
 def _book_session(caps: Capacidades) -> dict[str, Any]:

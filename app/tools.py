@@ -626,7 +626,20 @@ class ToolRuntime:
         ficha = {k: v for k, v in args.items() if v is not None}
         if not ficha:
             return {"ok": True, "nota": "sin campos nuevos"}
-        await self._ctx.crm.put_ficha(self._crm_conv_id, ficha)
+        respuesta = await self._ctx.crm.put_ficha(self._crm_conv_id, ficha)
+        # vocero-crm 072 (D10): lo que no encajó con el tipo de su campo vuelve
+        # en `ignored`; se le dice al modelo para que repregunte una vez.
+        ignorados = [
+            i.get("key")
+            for i in ((respuesta if isinstance(respuesta, dict) else {}).get("ignored") or [])
+            if isinstance(i, dict) and isinstance(i.get("key"), str)
+        ]
+        if ignorados:
+            return {
+                "ok": True,
+                "ignorados": ignorados,
+                "nota": "esos datos no quedaron: no encajan con su tipo; si hace falta, pregúntalos de nuevo una vez",
+            }
         return {"ok": True}
 
     async def _move_stage(self, args: dict[str, Any]) -> dict[str, Any]:
