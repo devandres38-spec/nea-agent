@@ -44,7 +44,7 @@ class BusinessProfile:
 
     cloud: bool = False
     config_version: int = 1
-    agent_name: str = "Nea"
+    agent_name: str = "Asistente"  # 071 (D13): marca blanca
     tone: str | None = None
     instructions: str | None = None
     escalation_rules: str | None = None
@@ -154,7 +154,7 @@ def profile_from_brief(path: Path, default_name: str) -> BusinessProfile | None:
 async def resolve_profile(ctx: Any) -> BusinessProfile:
     """Perfil vigente desde el AppContext; sin provider (tests) = mínimo."""
     if getattr(ctx, "profile", None) is None:
-        return BusinessProfile(agent_name=getattr(ctx.settings, "agent_name", "Nea"))
+        return BusinessProfile(agent_name=getattr(ctx.settings, "agent_name", "Asistente"))
     return await ctx.profile.get()
 
 
@@ -165,7 +165,7 @@ class ProfileProvider:
         self,
         crm: Any,
         *,
-        default_name: str = "Nea",
+        default_name: str = "Asistente",
         brief_path: str | None = None,
         ttl: float = PROFILE_TTL_SECONDS,
     ) -> None:

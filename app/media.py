@@ -73,7 +73,7 @@ def _honest_failure(msg: InboundMessage) -> MediaPart:
     return MediaPart(
         text=(
             f"[El lead mandó {que} que NO pudiste abrir/procesar."
-            f"{_caption_line(msg, 'ese contenido')} Sé honesta: dile que no lo"
+            f"{_caption_line(msg, 'ese contenido')} Con honestidad: dile que no lo"
             " pudiste abrir y pídele el contenido en texto o nota de voz.]"
         )
     )
@@ -103,7 +103,7 @@ async def _image(ctx: AppContext, msg: InboundMessage) -> MediaPart:
         return MediaPart(
             text=(
                 "[El lead mandó una imagen demasiado pesada para verla."
-                f"{caption} Sé honesta si hace falta.]"
+                f"{caption} Dilo con honestidad si hace falta.]"
             )
         )
     mime_clean = (mime or msg.media_mime or "image/jpeg").split(";")[0].strip()
@@ -157,8 +157,8 @@ async def _document(ctx: AppContext, msg: InboundMessage) -> MediaPart:
         return MediaPart(
             text=(
                 f"[El lead mandó el documento '{filename}' pero no pudiste leer"
-                f" su contenido.{_caption_line(msg, 'el documento')} Sé honesta"
-                " y pídele lo importante en texto.]"
+                f" su contenido.{_caption_line(msg, 'el documento')} Con honestidad,"
+                " pídele lo importante en texto.]"
             )
         )
     return MediaPart(
@@ -207,7 +207,7 @@ async def _video(ctx: AppContext, msg: InboundMessage) -> MediaPart:
     return MediaPart(
         text=(
             "[El lead mandó un video — NO puedes ver videos todavía."
-            f"{_caption_line(msg, 'el video')} Sé honesta y ofrécele que te lo"
+            f"{_caption_line(msg, 'el video')} Con honestidad, ofrécele que te lo"
             " cuente en texto o con una nota de voz (esas sí las entiendes).]"
         )
     )
@@ -217,7 +217,7 @@ async def _fallback(ctx: AppContext, msg: InboundMessage) -> MediaPart:
     return MediaPart(
         text=(
             f"[El lead mandó contenido que no puedes ver (tipo: {msg.type})."
-            " Sé honesta: pídele que te lo mande como texto o nota de voz.]"
+            " Con honestidad: pídele que te lo mande como texto o nota de voz.]"
         )
     )
 

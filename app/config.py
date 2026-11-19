@@ -79,7 +79,7 @@ class Settings(BaseSettings):
     crm_bot_api_key: str = ""
 
     # Perfil del negocio (capa de persona; ver app/profile.py)
-    agent_name: str = "Nea"  # se usa si el CRM no define nombre
+    agent_name: str = "Asistente"  # 071 (D13): se usa si el CRM no define nombre (igual que el default de agent_profile.name)
     # IANA. Respaldo: la zona de cada negocio la manda el CRM con sus citas
     # (`zona_del_negocio`); esta solo cuenta si el CRM no la dice.
     agent_timezone: str = ZONA_POR_DEFECTO

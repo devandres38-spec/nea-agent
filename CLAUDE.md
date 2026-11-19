@@ -18,9 +18,12 @@ idempotentes al arranque · httpx (CRM y OpenAI) · pytest + respx · Docker
 
 | Quieres cambiar… | Toca… |
 |---|---|
-| El chasis conductual del agente | `app/prompt.py` (NO relajar los NUNCA) |
+| El chasis conductual del agente | `app/chasis/secciones.py` (el texto, por secciones; NO relajar los NUNCA) + `app/chasis/armar.py` · contexto vivo en `app/prompt.py` · doradas byte a byte en `tests/test_chasis_dorado.py` |
+| Un rol (misión, enfoque, cierre sin rumbo, herramientas) | `app/roles.py` (`ROLES`, clave del CRM; desconocida → `calificador`) |
+| El trato (tú/usted/neutro) y la regla de idioma | `app/chasis/armar.py` (`VOCES`, `LINEA_IDIOMA`) |
+| La confirmación de cita (guardarraíl ok/pie/contradicción) | `app/confirmacion.py` |
 | La capa de persona del negocio | `app/profile.py` (CRM → brief local → mínimo) |
-| Las acciones del bot | `app/tools.py` + orquestación en `app/turn.py` |
+| Las acciones del bot | registro de `ToolSpec` en `app/herramientas/` (punto de enchufe de la 072) + ejecución en `app/tools.py` + orquestación en `app/turn.py` |
 | El contrato con el CRM | `app/crm.py` (espejo del bot gateway de vocero) · prueba gemela del despacho en `tests/test_despacho_raiz.py` |
 | La entrada (despacho del CRM, los dos modos) | `app/dispatch.py` · cola durable `app/dispatch_store.py` + `app/dispatch_worker.py` |
 | Con qué piensa (llave propia o la del CRM por `/api/bot/llm`) | `app/llm.py` (`LlmPorElCrm`) · elección al arranque en `app/main.py` (`_llm_del_arranque`) |
@@ -29,7 +32,7 @@ idempotentes al arranque · httpx (CRM y OpenAI) · pytest + respx · Docker
 | El ensayo: el dueño prueba a su agente sin WhatsApp (cloud) | `app/ensayo.py` — el turno de siempre sobre un CRM que solo lee y una memoria que muere con la petición |
 | El webhook de Meta que ya no se recibe (503) | `app/webhook_retirado.py` |
 | Seguimiento | `app/followup.py` |
-| Lo que el lead ve en WhatsApp (Markdown → WhatsApp) | `app/formato.py` |
+| Lo que el lead ve (Markdown → WhatsApp; texto plano en IG/Messenger/TikTok) | `app/formato.py` (`formatear_para`) · vectores gemelos con el CRM en `tests/fixtures/texto_plano_vectores.json` |
 | El candado de cierre (conversación sin rumbo) | `app/stall.py` + gate 1.5 de `app/turn.py` |
 | `/health` (versión, commit, modo, `llm`, webhook de Meta) | `app/main.py` · `app/version.py` |
 | Tablas en un esquema propio (`DATABASE_SCHEMA`) | `app/db.py` (`PgStore.connect`) |
@@ -40,7 +43,7 @@ idempotentes al arranque · httpx (CRM y OpenAI) · pytest + respx · Docker
 - **El bot NUNCA llama a graph.facebook.com para enviar.** Todo por
   `POST {CRM}/api/bot/messages`.
 - **Los NUNCA del chasis** (inventar, fingir humano, jerga, datos sensibles,
-  seguir vendiendo a un hostil) viven en `app/prompt.py` — cualquier cambio
+  seguir vendiendo a un hostil) viven en `app/chasis/secciones.py` — cualquier cambio
   de prompt re-corre una verificación de comportamiento end-to-end.
 - **`ALLOWED_WA_IDS`**: con valor, solo se responde a esas identidades. No la
   vacíes sin decisión explícita del dueño de la instancia.

@@ -35,6 +35,33 @@ Qué cambia en cada versión de Nea y qué hacer al actualizar. Cada tag
   `NEA_DOCS=1`; `/vocero/ensayo` con cupo (`ENSAYO_CONCURRENCY`, 429) y tope
   (`ENSAYO_TIMEOUT_SECONDS`).
 
+### Chasis, roles y ajustes por negocio (vocero-crm 071, Ronda 2)
+
+Necesita vocero-crm **2.11** para los campos nuevos; con un CRM anterior todo
+sigue como antes (`tu`, cierre encendido, sonda de agenda).
+
+- **Trato del negocio** (`profile.treatment`: `tu` · `usted` · `neutro`,
+  desconocido → `tu`) en la voz del prompt y en la confirmación de cita. Para
+  todos: **si el cliente escribe en otro idioma, se le contesta en ese
+  idioma** (línea nueva del prompt).
+- **`stallEnabled`**: con `false` el agente nunca se despide por falta de
+  rumbo ni calla los rellenos tras un cierre anterior.
+- **Confirmación de cita con la voz del negocio**: el texto del modelo sale
+  tal cual si trae la fecha, la hora y el enlace correctos; si le falta algo,
+  se le añade un pie; si contradice la cita, la plantilla de siempre (con el
+  trato). Vale también para la cita movida.
+- **Formato por canal**: Instagram, Messenger y TikTok reciben texto sin
+  marcas (gemelo de `plainSocialText` del CRM); WhatsApp, como siempre.
+- **Marca blanca**: el agente sin nombre del CRM se llama **«Asistente»**
+  (`AGENT_NAME`, antes «Nea»); título de la API «Aliantis — cerebro
+  conversacional»; el 503 de `/webhook` es solo `{"error":"webhook_retirado"}`;
+  marcadores multimedia sin género. Rutas, cabeceras y logs no cambian.
+- **Por dentro** (para la 072): el chasis vive por secciones
+  (`app/chasis/`), los roles son datos (`app/roles.py`, clave del CRM;
+  desconocida → `calificador`) y las herramientas, un registro de `ToolSpec`
+  (`app/herramientas/`). El prompt de siempre sale idéntico byte a byte salvo
+  las líneas aprobadas (pruebas doradas).
+
 ### Corregido
 
 - **Un negocio reasignado ya no tumba a los demás de la misma Nea**

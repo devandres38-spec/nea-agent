@@ -302,7 +302,7 @@ def create_app(ctx: AppContext | None = None) -> FastAPI:
     # superficie a quien escaneara.
     docs = os.environ.get("NEA_DOCS", "").strip() == "1"
     app = FastAPI(
-        title="Nea — agente de agendamiento para WhatsApp",
+        title="Aliantis — cerebro conversacional",
         lifespan=lifespan,
         docs_url="/docs" if docs else None,
         redoc_url="/redoc" if docs else None,

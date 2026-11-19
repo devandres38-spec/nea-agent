@@ -113,7 +113,7 @@ class RegistroDeOrganizaciones:
         base_url: str,
         secreto_despliegue: str,
         *,
-        nombre_por_defecto: str = "Nea",
+        nombre_por_defecto: str = "Asistente",
         brief_path: str | None = None,
         agenda_ttl: float = 60.0,
     ) -> None:

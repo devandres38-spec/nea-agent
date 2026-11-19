@@ -443,7 +443,7 @@ que definen la personalidad:
 
 | Variable | Default | Qué hace |
 |---|---|---|
-| `AGENT_NAME` | `Nea` | Nombre del agente si el CRM no define uno |
+| `AGENT_NAME` | `Asistente` | Nombre del agente si el CRM no define uno (071: marca blanca) |
 | `AGENT_TIMEZONE` | `America/Mexico_City` | Zona horaria IANA de respaldo para las fechas del prompt; la de cada negocio la manda el CRM con sus citas |
 | `BRIEF_PATH` | *(vacío)* | Markdown local con el brief del negocio (fallback) |
 | `STALL_FILLER_STREAK` | `3` | Mensajes de relleno seguidos que cierran la conversación (0 = apagado) |

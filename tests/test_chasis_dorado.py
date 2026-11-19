@@ -129,9 +129,15 @@ def aplicar_deltas_071(texto: str, nombre: str) -> str:
     """Los únicos cambios aprobados sobre el prompt de antes de la 071.
 
     D15: la regla de idioma, una línea nueva justo después de la del trato.
+    D13: el nombre por defecto del agente pasa de «Nea» a «Asistente» (solo
+    lo ve el perfil mínimo, sin nombre del CRM).
     """
     assert texto.count(VOZ_TU) == 1, nombre
-    return texto.replace(VOZ_TU, VOZ_TU + "\n" + LINEA_IDIOMA)
+    texto = texto.replace(VOZ_TU, VOZ_TU + "\n" + LINEA_IDIOMA)
+    if nombre == "single_minimo":
+        assert texto.count("Nea") == 4, texto.count("Nea")
+        texto = texto.replace("Nea", "Asistente")
+    return texto
 
 
 @pytest.mark.parametrize("nombre", sorted(CASOS))

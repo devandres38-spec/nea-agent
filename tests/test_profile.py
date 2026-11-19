@@ -85,7 +85,7 @@ async def test_provider_cae_al_brief_local_si_crm_404(tmp_path):
     brief.write_text("Somos una barbería. Agenda cortes de 30 min.", encoding="utf-8")
     provider = ProfileProvider(FakeCrm([None]), brief_path=str(brief))
     prof = await provider.get()
-    assert prof.agent_name == "Nea"
+    assert prof.agent_name == "Asistente"  # 071 (D13, R4): marca blanca
     assert prof.instructions and "barbería" in prof.instructions
     assert prof.has_knowledge
 
@@ -93,7 +93,7 @@ async def test_provider_cae_al_brief_local_si_crm_404(tmp_path):
 async def test_provider_minimo_sin_crm_ni_brief():
     provider = ProfileProvider(FakeCrm([None]))
     prof = await provider.get()
-    assert prof == BusinessProfile(agent_name="Nea")
+    assert prof == BusinessProfile(agent_name="Asistente")  # 071 (D13, R4)
 
 
 async def test_provider_sirve_el_ultimo_conocido_si_crm_cae():
@@ -129,7 +129,7 @@ def test_prompt_compone_chasis_y_negocio():
 
 def test_prompt_minimo_advierte_falta_de_conocimiento():
     system = build_system_prompt(profile=BusinessProfile(), context=None, conv=_conv())
-    assert "Eres Nea" in system
+    assert "Eres Asistente" in system  # 071 (D13, R4): marca blanca
     assert "OJO: el negocio aún no configuró" in system
     assert "(sin entradas todavía)" in system
 
