@@ -28,7 +28,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from app.crm import CrmRechazo
-from app.multiorg import organizacion_del_despacho
+from app.multiorg import contexto_del_turno, organizacion_del_despacho
 from app.http_limits import limited_body
 from app.state import AppContext, InboundMessage
 from app.turn import conversation_lock, handle_flush, marca_de_leido
@@ -232,7 +232,7 @@ async def olvidar(ctx: AppContext, payload: dict[str, Any]) -> None:
     cola = org[0] if org else ctx.settings.crm_organization
     # Con el candado del turno: en cloud la cola ya los pone en fila, pero el
     # seguimiento y el reintento de envíos corren por fuera de ella.
-    async with conversation_lock(ctx, identity):
+    async with conversation_lock(ctx, identity, org_id):
         borrada = await ctx.store.forget_conversation(org_id, identity, conversation_id)
         await ctx.store.forget_dispatches(cola, conversation_id, str(payload["dispatchId"]))
     logger.info(
@@ -293,13 +293,13 @@ async def _procesar(ctx: AppContext, payload: dict[str, Any], *, durable: bool =
         if ctx_turno is None:
             return  # el motivo ya quedó en el log, y la conversación con humano
     else:
+        ctx_turno = contexto_del_turno(ctx)
         # El CRM ya sabe de quién es esta conversación; el cliente lo recuerda
         # para pedir el contexto de ESA conversación y no adivinarla por
         # teléfono (en `/api/brains` ni se puede).
-        registrar = getattr(ctx.crm, "registrar", None)
+        registrar = getattr(ctx_turno.crm, "registrar", None)
         if callable(registrar):
             registrar(identity, conversation_id)
-        ctx_turno = ctx
 
     # Y de qué despacho es. Sin esto el CRM rechaza la respuesta con 422: el
     # `dispatchId` es lo que le deja no responder dos veces al mismo cliente
@@ -384,8 +384,11 @@ async def _contexto_multiorg(
         ctx,
         crm=cliente,
         llm=registro.llm(org_id, slug, config_ia, ctx.settings),
-        profile=registro.perfil(org_id, slug),
+        profile=registro.perfil(cliente),
         organizacion=(org_id, slug),
+        # 071 (D5): la agenda de ESTE negocio, no la de la instancia.
+        agenda_sonda=registro.sonda(org_id, slug),
+        agenda_enabled=True,
     )
 
 

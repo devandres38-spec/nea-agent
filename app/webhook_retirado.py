@@ -44,10 +44,8 @@ def _registrar(ctx: AppContext) -> JSONResponse:
     ctx.webhook_meta_ultimo = ahora
     if anterior is None or ahora - anterior >= AVISO_CADA:
         logger.error(AVISO)
-    return JSONResponse(
-        {"error": "webhook_retirado", "detalle": "Nea 2.0 recibe el despacho del CRM"},
-        status_code=503,
-    )
+    # 071 (D13): sin marca. El detalle para quien instala va al log (AVISO).
+    return JSONResponse({"error": "webhook_retirado"}, status_code=503)
 
 
 @router.post("/webhook")

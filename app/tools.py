@@ -26,6 +26,7 @@ from app.crm import (
     SlotTaken,
 )
 from app.config import ZONA_POR_DEFECTO
+from app.confirmacion import confirmar
 from app.dias import nombra_un_dia
 from app.profile import BusinessProfile
 from app.state import AppContext, Conversation, OfferedSlot
@@ -294,8 +295,14 @@ def etapas_siguientes(context: dict[str, Any] | None) -> list[str]:
 
 
 def con_mover_etapa(schemas: list[dict[str, Any]], etapas: list[str]) -> list[dict[str, Any]]:
-    """El catálogo del turno más `move_stage` si hay a dónde mover."""
-    return schemas + [MOVE_STAGE_SCHEMA] if etapas else schemas
+    """El catálogo del turno más `move_stage` si hay a dónde mover.
+
+    Desde la auditoría 071 (A-7) `tool_schemas(..., etapas=…)` ya la incluye;
+    esto queda por compatibilidad y no la duplica.
+    """
+    if not etapas or any(t.get("function", {}).get("name") == "move_stage" for t in schemas):
+        return schemas
+    return schemas + [MOVE_STAGE_SCHEMA]
 
 
 # Recordatorios de la cita: SOLO los manda la agenda v2 de Vocero Cloud. El
@@ -317,65 +324,77 @@ AGENDA_V2_SCHEMAS = [
     {"type": "function", "function": {"name": "cancel_session", "description": "Cancela la cita seleccionada SOLO después de confirmación explícita del cliente. Usa el selectionToken devuelto por list_bookings.", "parameters": {"type": "object", "properties": {"selection_token": {"type": "string"}, "confirmation": {"type": "boolean"}}, "required": ["selection_token", "confirmation"]}}},
 ]
 
-# Herramientas que solo tienen sentido si el CRM agenda.
-AGENDA_TOOLS = frozenset({"propose_slots", "book_session", "reschedule_session"})
+def __getattr__(nombre: str) -> Any:
+    """Auditoría 071 (A-7): sin constantes duplicadas del registro.
 
-# 034 — De qué clave del catálogo del CRM es cada herramienta. Una que no esté
-# aquí no se puede apagar desde el CRM.
-CLAVE_DE_HERRAMIENTA = {
-    "update_ficha": "ficha",
-    "move_stage": "etapa",
-    "propose_slots": "agendar",
-    "book_session": "agendar",
-    "list_bookings": "agendar",
-    "cancel_session": "agendar",
-    "coordination_consent": "agendar",
-    "reschedule_session": "reprogramar",
-    "route_out": "salida",
-    "handoff": "escalar",
-}
+    `CLAVE_DE_HERRAMIENTA` (de qué clave del catálogo del CRM es cada
+    herramienta) y `AGENDA_TOOLS` (las que solo existen si el CRM agenda) se
+    derivan de `app/herramientas/builtin.py`, la única fuente.
+    """
+    from app.herramientas.builtin import REGISTRO
+    from app.herramientas.registro import Capacidades
+
+    if nombre == "CLAVE_DE_HERRAMIENTA":
+        return {spec.nombre: spec.clave for spec in REGISTRO}
+    if nombre == "AGENDA_TOOLS":
+        return frozenset(
+            spec.nombre
+            for spec in REGISTRO
+            if spec.ofrecer(Capacidades(agenda=True)) and not spec.ofrecer(Capacidades(agenda=False))
+        )
+    raise AttributeError(nombre)
 
 
 def solo_encendidas(schemas: list[dict[str, Any]], profile: Any) -> list[dict[str, Any]]:
-    """Las herramientas que el perfil deja encendidas (034)."""
+    """Las herramientas que el perfil deja encendidas (034).
+
+    071 (D20): efectivas = rol ∩ perfil del negocio ∩ capacidades del CRM.
+    Las capacidades ya filtraron `schemas` (`tool_schemas`); aquí, el rol
+    (`app/roles.py`) y lo que el dueño encendió.
+    """
+    from app.herramientas.builtin import REGISTRO
+    from app.roles import rol_de
+
     permite = getattr(profile, "permite", None)
     if not callable(permite):
         return schemas
-    return [
-        t
-        for t in schemas
-        if permite(CLAVE_DE_HERRAMIENTA.get(t.get("function", {}).get("name", ""), "escalar"))
-    ]
+    rol = rol_de(getattr(profile, "role", None))
+    out = []
+    for t in schemas:
+        clave = REGISTRO.clave_de(t.get("function", {}).get("name", ""))
+        if permite(clave) and rol.permite(clave):
+            out.append(t)
+    return out
 
 
-def tool_schemas(agenda_enabled: bool = True, agenda_v2: bool = False, coordination: bool = False) -> list[dict[str, Any]]:
+def tool_schemas(
+    agenda_enabled: bool = True,
+    agenda_v2: bool = False,
+    coordination: bool = False,
+    context: dict[str, Any] | None = None,
+    etapas: list[str] | None = None,
+) -> list[dict[str, Any]]:
     """El catálogo que se le ofrece al modelo en ESTE turno.
 
     Contra un CRM sin agenda no se le enseñan las herramientas de agendar: si
     se le enseñan, las llama, fallan todas y el lead recibe evasivas en vez de
     un handoff limpio. Que no exista la herramienta es más claro que pedirle al
     prompt que se acuerde de no usarla.
+
+    071 (D20): sale del registro de `ToolSpec` (`app/herramientas/`).
     """
-    if agenda_enabled:
-        if agenda_v2:
-            import copy
-            schemas = copy.deepcopy(TOOL_SCHEMAS)
-            for tool in schemas:
-                if tool["function"]["name"] == "book_session":
-                    params = tool["function"]["parameters"]
-                    params["properties"]["recordatorios_aceptados"] = dict(RECORDATORIOS_ACEPTADOS)
-                    params["required"].append("recordatorios_aceptados")
-                if tool["function"]["name"] == "reschedule_session":
-                    params = tool["function"]["parameters"]
-                    params["properties"]["selection_token"] = {"type": "string", "description": "Token de list_bookings de la cita elegida y confirmada por el cliente"}
-                    params["required"].append("selection_token")
-            return schemas + AGENDA_V2_SCHEMAS + ([{"type": "function", "function": {"name": "coordination_consent", "description": "Registra consentimiento EXPLÍCITO para un único recordatorio de coordinación tras 24 horas sin reservar. Nunca deduzcas consentimiento por pedir una cita. consent=false si rechaza seguimiento. Solo tras ofrecer horarios.", "parameters": {"type": "object", "properties": {"consent": {"type": "boolean"}}, "required": ["consent"]}}}] if coordination else [])
-        return TOOL_SCHEMAS
-    return [
-        t
-        for t in TOOL_SCHEMAS
-        if t.get("function", {}).get("name") not in AGENDA_TOOLS
-    ]
+    from app.herramientas.builtin import REGISTRO
+    from app.herramientas.registro import Capacidades
+
+    return REGISTRO.esquemas(
+        Capacidades(
+            agenda=agenda_enabled,
+            agenda_v2=agenda_v2,
+            coordinacion=coordination,
+            contexto=context,
+            etapas=tuple(etapas if etapas is not None else etapas_siguientes(context)),
+        )
+    )
 
 
 def _meeting(result: dict[str, Any]) -> tuple[str | None, bool]:
@@ -526,8 +545,12 @@ class ToolRuntime:
         conversacion_reciente: str | None = None,
         etapas: list[str] | None = None,
         profesionales: list[dict[str, str]] | None = None,
+        context: dict[str, Any] | None = None,
     ) -> None:
         self._ctx = ctx
+        # Auditoría 071 (A-7): el contexto del turno, para el catálogo
+        # (`esquema_de_ficha`, la 072) y para validar lo que se ejecuta.
+        self.contexto = context
         # vocero-cloud 233 — con quién se puede agendar (`booking.agendas`).
         self.profesionales: list[dict[str, str]] = list(profesionales or [])
         # 038 — A qué etapas puede mover al lead (`lead.nextStages`).
@@ -548,33 +571,26 @@ class ToolRuntime:
         self.etapa_movida: str | None = None
 
     async def execute(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
+        """Despacha por registro (071, D20), no por `if name == …`."""
+        from app.herramientas.builtin import REGISTRO
+        from app.herramientas.registro import Capacidades
+
+        caps = self.capacidades()
         try:
-            if name == "coordination_consent" and getattr(self._ctx.crm, "supports_coordination", False):
-                if not isinstance(args.get("consent"), bool):
-                    return {"ok": False, "error": "explicit_consent_required"}
-                return await self._ctx.crm.set_coordination_consent(self._crm_conv_id, args["consent"])
-            if name == "list_bookings" and getattr(self._ctx.crm, "supports_agenda_v2", False):
-                return {"ok": True, "bookings": await self._ctx.crm.list_bookings(self._crm_conv_id)}
-            if name == "cancel_session" and getattr(self._ctx.crm, "supports_agenda_v2", False):
-                if args.get("confirmation") is not True or not args.get("selection_token"):
-                    return {"ok": False, "error": "confirmation_required"}
-                return await self._ctx.crm.cancel_booking(self._crm_conv_id, str(args["selection_token"]), True)
-            if name == "update_ficha":
-                return await self._update_ficha(args)
-            if name == "move_stage":
-                return await self._move_stage(args)
-            if name == "propose_slots":
-                return await self._propose_slots(args)
-            if name == "book_session":
-                return await self._book_session(args)
-            if name == "reschedule_session":
-                return await self._reschedule_session(args)
-            if name == "route_out":
-                return await self._route_out()
-            if name == "handoff":
-                return self._handoff(args)
-            logger.warning("tools: herramienta desconocida %r", name)
-            return {"ok": False, "error": f"herramienta desconocida: {name}"}
+            spec = REGISTRO.get(name)
+            if spec is None or not spec.ejecutable(caps):
+                logger.warning("tools: herramienta desconocida %r", name)
+                return {"ok": False, "error": f"herramienta desconocida: {name}"}
+            if not self._permitida(spec, caps):
+                # A-7: el modelo (o una inyección) pidió una herramienta que no
+                # se le ofreció: apagada por el negocio o el rol, o sin agenda.
+                logger.warning("tools: %r no está permitida en este turno — no se ejecuta", name)
+                return {
+                    "ok": False,
+                    "error": "herramienta_no_disponible",
+                    "detalle": "esa acción no está disponible aquí; sigue sin ella o haz handoff",
+                }
+            return await spec.ejecutar(self, args)
         except CrmError as exc:
             logger.warning("tools: %s falló contra el CRM: %s", name, exc)
             return {
@@ -582,6 +598,28 @@ class ToolRuntime:
                 "error": "crm_error",
                 "detalle": "no pude completar la acción; continúa la conversación o haz handoff",
             }
+
+    def capacidades(self) -> Any:
+        """Lo que el CRM de este turno sabe hacer (y lo que el turno decidió)."""
+        from app.herramientas.registro import Capacidades
+
+        return Capacidades(
+            agenda=bool(getattr(self._ctx, "agenda_enabled", True)),
+            agenda_v2=bool(getattr(self._ctx.crm, "supports_agenda_v2", False)),
+            coordinacion=bool(getattr(self._ctx.crm, "supports_coordination", False)),
+            contexto=self.contexto,
+            etapas=tuple(self.etapas),
+        )
+
+    def _permitida(self, spec: Any, caps: Any) -> bool:
+        """Lo mismo que se le ofreció: capacidades ∩ perfil ∩ rol (A-7, D20)."""
+        from app.roles import rol_de
+
+        return bool(
+            spec.ofrecer(caps)
+            and self._profile.permite(spec.clave)
+            and rol_de(getattr(self._profile, "role", None)).permite(spec.clave)
+        )
 
     async def _update_ficha(self, args: dict[str, Any]) -> dict[str, Any]:
         # Tolera el drift del LLM: manda lo que haya, el CRM normaliza flojo.
@@ -945,6 +983,8 @@ class ToolRuntime:
         self.booked = True
         meeting_url, link_pending = _meeting(result)
         self.booking_confirmation = {
+            "tipo": "book",
+            **self._instante_de(chosen),
             "label": chosen.label or result.get("label"),
             "meeting_url": meeting_url,
             "link_pending": link_pending,
@@ -973,29 +1013,33 @@ class ToolRuntime:
             ),
         }
 
+    def _instante_de(self, chosen: OfferedSlot) -> dict[str, str]:
+        """071 (A-5): la cita del guardarraíl sale del instante reservado y de
+        la zona del negocio, no de leer la etiqueta («mar» no es marzo)."""
+        return {
+            "start_utc": _iso_z(chosen.start_utc),
+            "tz": getattr(self._tz, "key", "") or ZONA_POR_DEFECTO,
+            "hoy": datetime.now(timezone.utc).astimezone(self._tz).date().isoformat(),
+        }
+
     def finalize_reply(self, text: str) -> str:
-        """Booking confirmation is authoritative, not left to model wording.
+        """La confirmación de la cita pasa por el guardarraíl (071, D17).
+
+        Antes se tiraba el texto del modelo y salía una plantilla con «tu»
+        fijo. Ahora: si el texto trae la fecha, la hora y el enlace correctos,
+        sale tal cual; si le falta algo, se le añade un pie; si contradice la
+        cita, la plantilla de siempre con el trato del negocio
+        (`app/confirmacion.py`).
 
         El enlace se nombra neutro: la reunión la entrega un conector (Zoom,
         Google Meet o la sala fija del negocio) y ninguno de los dos CRM dice
-        cuál — `/api/bot/bookings` manda `meetingLink` a secas y
-        `/api/brains/agenda/book` tampoco trae el proveedor del enlace (los
-        `deliveryStates` del contrato v2 son la sincronización con calendario
-        y Zoom, no de dónde es el enlace). Decir "Zoom" a quien le llegó un
-        Meet es justo la clase de dato inventado que el agente no dice.
+        cuál. Decir "Zoom" a quien le llegó un Meet es justo la clase de dato
+        inventado que el agente no dice.
         """
         data = self.booking_confirmation
         if not data:
             return text
-        label = data.get("label") or "el horario acordado"
-        parts = [f"Listo, tu cita quedó confirmada para {label}."]
-        if data.get("meeting_url"):
-            parts.append(f"Enlace de la reunión: {data['meeting_url']}")
-        elif data.get("link_pending"):
-            parts.append("El enlace de la videollamada te llegará por aquí en un momento.")
-        if data.get("reminder_consent"):
-            parts.append("También quedaron activados los recordatorios que autorizaste.")
-        return "\n\n".join(parts)
+        return confirmar(text, data, getattr(self._profile, "treatment", "tu"))
 
     async def _reschedule_session(self, args: dict[str, Any]) -> dict[str, Any]:
         chosen, error = await self._resolve_offered(args, "reschedule_session")
@@ -1031,11 +1075,21 @@ class ToolRuntime:
             raise
         await self._ctx.store.clear_offered_slots(self._conv.id)
         self.booked = True
+        meeting_url, link_pending = _meeting(result)
+        # 071 (D17): la cita movida también pasa por el guardarraíl.
+        self.booking_confirmation = {
+            "tipo": "reschedule",
+            **self._instante_de(chosen),
+            "label": chosen.label or result.get("label"),
+            "meeting_url": meeting_url,
+            "link_pending": link_pending,
+            "reminder_consent": False,
+        }
         return {
             "ok": True,
             "label": chosen.label or result.get("label"),
-            "meeting_url": _meeting(result)[0],
-            "enlace_pendiente": _meeting(result)[1],
+            "meeting_url": meeting_url,
+            "enlace_pendiente": link_pending,
             "instrucciones": (
                 "confirma que quedó movida, con el día COMPLETO y la hora tal "
                 "cual dice label; el link de la videollamada sigue siendo el "

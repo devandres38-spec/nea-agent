@@ -79,7 +79,7 @@ class Settings(BaseSettings):
     crm_bot_api_key: str = ""
 
     # Perfil del negocio (capa de persona; ver app/profile.py)
-    agent_name: str = "Nea"  # se usa si el CRM no define nombre
+    agent_name: str = "Asistente"  # 071 (D13): se usa si el CRM no define nombre (igual que el default de agent_profile.name)
     # IANA. Respaldo: la zona de cada negocio la manda el CRM con sus citas
     # (`zona_del_negocio`); esta solo cuenta si el CRM no la dice.
     agent_timezone: str = ZONA_POR_DEFECTO
@@ -245,6 +245,54 @@ class Settings(BaseSettings):
     # instalar el par no pide una segunda base.
     database_schema: str = Field(default="", pattern=r"^[a-z_][a-z0-9_]{0,62}$|^$")
     port: int = 8000
+
+    # ── Capacidad (vocero-crm 071, D2) ─────────────────────────────────
+    #
+    # Turnos a la vez por proceso. Un turno es casi todo espera (el modelo
+    # tarda 2–20 s), así que la CPU no es el límite: lo son la memoria por
+    # turno (imágenes en base64), las conexiones a Postgres y la presión
+    # sobre el CRM. 8 cabe con holgura en el VPS inicial (4 vCPU / 7.8 GiB
+    # compartido con Postgres y el CRM). Dos mensajes de la MISMA
+    # conversación nunca corren a la vez: eso lo garantiza la cola.
+    dispatch_concurrency: int = Field(default=8, ge=1, le=64)
+    # Cuántos de esos turnos puede ocupar un mismo negocio. Que la ráfaga de
+    # uno —o su llave con límite de tasa— no deje esperando a los demás.
+    # 0 = sin tope.
+    dispatch_max_por_org: int = Field(default=3, ge=0)
+    # Conexiones a Postgres de este proceso. 0 = automático: un turno a la
+    # vez por consumidor más 4 para el envío diferido, el mantenimiento,
+    # `/health` y la recepción del despacho.
+    db_pool_max: int = Field(default=0, ge=0, le=200)
+
+    # ── Observabilidad (071, D8) ─────────────────────────────────────────
+    # `json` o `text`. Vacía = `json` en cloud (para buscar por negocio y por
+    # despacho) y `text` en una Nea de un solo negocio, como siempre.
+    log_format: str = Field(default="", pattern=r"^(json|text)?$")
+
+    # ── Ensayo (071, D11) ────────────────────────────────────────────────
+    # Ensayos a la vez por proceso: los pide el dueño desde el CRM y cada uno
+    # son hasta 12 turnos. Sin hueco, 429 `ocupado` en el acto.
+    ensayo_concurrency: int = Field(default=2, ge=1)
+    # Tope de un ensayo entero; al pasarse devuelve lo que alcanzó a correr.
+    ensayo_timeout_seconds: float = Field(default=120.0, gt=0)
+
+    # ── Retención (071, D7) ──────────────────────────────────────────────
+    # Días que se guardan los despachos terminados (llevan los mensajes del
+    # cliente tal cual) y las marcas de deduplicación. Mínimo 2: el CRM puede
+    # reintentar un despacho durante 24 h.
+    retention_days: int = Field(default=14, ge=2)
+    # Días que se guardan los envíos diferidos ya entregados o abandonados.
+    pending_retention_days: int = Field(default=30, ge=1)
+
+    @property
+    def formato_de_logs(self) -> str:
+        return self.log_format or ("json" if self.cloud_mode else "text")
+
+    @property
+    def pool_max(self) -> int:
+        if self.db_pool_max:
+            return max(4, self.db_pool_max)
+        return self.dispatch_concurrency + 4
 
     # Desarrollo: loguear el JSON crudo de mensajes no-texto entrantes para
     # capturar los formatos reales de Meta (spec 002). Apagar al terminar.

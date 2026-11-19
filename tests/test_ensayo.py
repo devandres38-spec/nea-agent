@@ -133,7 +133,7 @@ async def test_agendamiento_completo_sin_que_salga_nada():
     for llamada in [*modelo.calls, *huecos.calls]:
         req = llamada.request
         assert req.headers["authorization"] == f"Bearer {credencial_derivada(SECRETO, ORG)}"
-        assert req.headers["x-vocero-organization"] == SLUG
+        assert req.headers["x-vocero-organization"] == ORG  # 071 (D4): el id
         assert req.headers["x-vocero-ensayo"] == FICHA
     assert huecos.calls[0].request.url.params["conversationId"] == "cv_ensayo_1"
     # La llave de la plataforma no viaja nunca.
@@ -202,3 +202,48 @@ async def test_el_crm_de_ensayo_no_sabe_escribir_lo_que_no_conoce():
         await crm.post_lo_que_sea("cv")
     await crm.send_message("cv", "hola")
     assert crm.eventos == [{"type": "message", "text": "hola"}]
+
+
+# ── 071 (D11): pocos a la vez y con tope ──────────────────────────────────
+
+
+async def test_071_sin_cupo_es_429_en_el_acto():
+    from app import ensayo
+
+    ctx = _ctx()
+    ctx.settings = ctx.settings.model_copy(update={"ensayo_concurrency": 1})
+    cupos = ensayo._cupos(ctx)
+    await cupos.acquire()  # otro ensayo ocupa el único cupo
+    try:
+        resp = await _post(ctx, _payload(["hola"]))
+    finally:
+        cupos.release()
+        await ctx.registro.aclose()
+    assert resp.status_code == 429
+    assert resp.json() == {"error": "ocupado"}
+
+
+async def test_071_un_ensayo_que_se_pasa_devuelve_lo_que_alcanzo():
+    import asyncio as _asyncio
+
+    ctx = _ctx()
+    ctx.settings = ctx.settings.model_copy(update={"ensayo_timeout_seconds": 0.3})
+    llamadas = 0
+
+    async def lento(request):
+        nonlocal llamadas
+        llamadas += 1
+        if llamadas > 1:
+            await _asyncio.sleep(2)  # el segundo turno se cuelga
+        return _completion("¡Hola! ¿En qué te ayudo?")
+
+    with respx.mock(assert_all_mocked=True, assert_all_called=False) as crm:
+        crm.post(f"{CRM}/api/brains/llm/chat/completions").mock(side_effect=lento)
+        try:
+            resp = await _post(ctx, _payload(["hola", "¿y el precio?"]))
+        finally:
+            await ctx.registro.aclose()
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["ok"] is False and data["error"] == "tiempo_agotado"
+    assert [t["customer"] for t in data["turns"]] == ["hola"]

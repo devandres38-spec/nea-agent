@@ -142,3 +142,56 @@ async def test_move_stage_sale_por_brains_en_cloud():
     assert peticion.headers["x-vocero-organization"] == "clinica-norte"
     assert json.loads(peticion.content) == {"conversationId": "cv_gemelo", "stage": "Calificado"}
     await cliente.aclose()
+
+
+# --------------------------------------------- 071 (D4): cabecera con id ---
+
+
+@respx.mock(assert_all_mocked=True, assert_all_called=False)
+async def test_071_la_cabecera_de_organizacion_lleva_el_id_en_toda_peticion(respx_mock):
+    """vocero-crm 071 (D4) — `X-Vocero-Organization` = `organization.id`.
+
+    El CRM acepta slug **o** id con la misma credencial derivada (gemelo en
+    vocero-crm: `cerebros-070-bloque1.test.ts`, «credencial de A con la
+    cabecera de A (slug o id) → ámbito de A»). Con el id, un cambio de
+    subdominio del negocio no deja mudo a un turno ni a un worker que
+    despierta horas después con el slug viejo.
+    """
+    from app import dispatch
+
+    contexto = {
+        "contact": {"id": "ct_gemelo", "name": "Ana Pérez", "identity": "573001112233", "ficha": {}},
+        "conversation": {"id": "cv_gemelo", "aiEnabled": True, "windowOpen": True},
+        "lead": {"stageName": "Nuevo"},
+        "agent": {"name": "Asistente", "coordinationFollowupEnabled": False},
+        "knowledge": [],
+        "llm": {"path": "/api/brains/llm", "model": "z-ai/glm-test", "transcribeModel": ""},
+    }
+    respx_mock.get("http://crm.test/api/brains/context").mock(return_value=httpx.Response(200, json=contexto))
+    respx_mock.post("http://crm.test/api/brains/typing").mock(return_value=httpx.Response(200, json={"ok": True}))
+    respx_mock.get("http://crm.test/api/brains/agenda/slots").mock(return_value=httpx.Response(404))
+    respx_mock.post("http://crm.test/api/brains/llm/chat/completions").mock(
+        return_value=httpx.Response(200, json={
+            "id": "x", "object": "chat.completion", "created": 0, "model": "z-ai/glm-test",
+            "choices": [{"index": 0, "finish_reason": "stop",
+                         "message": {"role": "assistant", "content": "¡Hola Ana! ¿Para qué día buscas cita?"}}],
+        })
+    )
+    mensajes = respx_mock.post("http://crm.test/api/brains/messages").mock(
+        return_value=httpx.Response(201, json={"ok": True, "messageId": "msg_r1"})
+    )
+
+    ctx = _ctx_multiorg()
+    try:
+        await dispatch._procesar(ctx, json.loads(CUERPO_MULTI), durable=True)
+    finally:
+        await ctx.registro.aclose()
+
+    assert mensajes.call_count == 1
+    llamadas = respx_mock.calls
+    assert len(llamadas) >= 4  # contexto, typing, modelo, mensaje
+    for llamada in llamadas:
+        cabeceras = llamada.request.headers
+        assert cabeceras["x-vocero-organization"] == "org_abc123", llamada.request.url
+        assert cabeceras["authorization"] == f"Bearer {credencial_derivada(SECRETO, 'org_abc123')}"
+        assert "clinica-norte" not in str(cabeceras)

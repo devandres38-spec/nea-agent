@@ -6,6 +6,83 @@ Qué cambia en cada versión de Nea y qué hacer al actualizar. Cada tag
 
 ## Sin publicar
 
+### Producción (vocero-crm 071, Ronda 1)
+
+- **Turnos concurrentes.** `DISPATCH_CONCURRENCY` (8) consumidores; la cola
+  serializa por **conversación** con lease en Postgres (antes: un advisory
+  lock por negocio que retenía una conexión todo el turno, así que un negocio
+  contestaba de uno en uno). Un negocio ocupa como mucho
+  `DISPATCH_MAX_POR_ORG` (3). Pool de Postgres = concurrencia + 4
+  (`DB_POOL_MAX`). Funciona igual con varias réplicas.
+- **Estado por turno.** Cada turno tiene su copia del contexto y su cliente
+  del CRM; todos comparten un solo pool HTTP hacia el CRM. Se acabaron los
+  diccionarios por conversación que crecían sin fin.
+- **`X-Vocero-Organization` lleva el id** en multiorg y en el ensayo: un
+  cambio de subdominio del negocio ya no deja muda a Nea.
+- **Agenda por negocio** en multiorg (`agent.agendaEnabled` del contexto, o
+  una sonda por organización): el 404 de un negocio ya no apaga la de todos.
+- **Envío diferido** reservado por lease (sin duplicados entre réplicas) y un
+  `401/403` lo abandona sin reintentar 24 h.
+- **Retención**: cada hora se purgan despachos terminados y marcas de
+  deduplicación de más de `RETENTION_DAYS` (14) y envíos cerrados de más de
+  `PENDING_RETENTION_DAYS` (30).
+- **Imágenes**: van al último mensaje del cliente (antes, con una alerta de
+  hostilidad o de cierre, el turno fallaba) y un modelo sin visión ya no
+  termina en silencio + handoff `error`: se contesta con honestidad.
+- **Observabilidad**: logs JSON en cloud (`LOG_FORMAT`) con `org`,
+  `dispatch` y `conversation`; teléfonos tapados; `/health` con `queues`.
+- **Superficie**: `/docs`, `/redoc` y `/openapi.json` apagados salvo
+  `NEA_DOCS=1`; `/vocero/ensayo` con cupo (`ENSAYO_CONCURRENCY`, 429) y tope
+  (`ENSAYO_TIMEOUT_SECONDS`).
+
+### Chasis, roles y ajustes por negocio (vocero-crm 071, Ronda 2)
+
+Necesita vocero-crm **2.11** para los campos nuevos; con un CRM anterior todo
+sigue como antes (`tu`, cierre encendido, sonda de agenda).
+
+- **Trato del negocio** (`profile.treatment`: `tu` · `usted` · `neutro`,
+  desconocido → `tu`) en la voz del prompt y en la confirmación de cita. Para
+  todos: **si el cliente escribe en otro idioma, se le contesta en ese
+  idioma** (línea nueva del prompt).
+- **`stallEnabled`**: con `false` el agente nunca se despide por falta de
+  rumbo ni calla los rellenos tras un cierre anterior.
+- **Confirmación de cita con la voz del negocio**: el texto del modelo sale
+  tal cual si trae la fecha, la hora y el enlace correctos; si le falta algo,
+  se le añade un pie; si contradice la cita, la plantilla de siempre (con el
+  trato). Vale también para la cita movida.
+- **Formato por canal**: Instagram, Messenger y TikTok reciben texto sin
+  marcas (gemelo de `plainSocialText` del CRM); WhatsApp, como siempre.
+- **Marca blanca**: el agente sin nombre del CRM se llama **«Asistente»**
+  (`AGENT_NAME`, antes «Nea»); título de la API «Aliantis — cerebro
+  conversacional»; el 503 de `/webhook` es solo `{"error":"webhook_retirado"}`;
+  marcadores multimedia sin género. Rutas, cabeceras y logs no cambian.
+- **Por dentro** (para la 072): el chasis vive por secciones
+  (`app/chasis/`), los roles son datos (`app/roles.py`, clave del CRM;
+  desconocida → `calificador`) y las herramientas, un registro de `ToolSpec`
+  (`app/herramientas/`). El prompt de siempre sale idéntico byte a byte salvo
+  las líneas aprobadas (pruebas doradas).
+
+### Auditoría de la 071 (antes del merge)
+
+- **Confirmación de cita**: «p. m.», «a. m.» y «10.30» ya no engañan al
+  guardarraíl; «9:00 de la noche» se lee bien; la cita sale del instante
+  reservado (no de la etiqueta: «mar» no es marzo); en una cita movida solo
+  cuenta la fecha nueva; «hoy» por «mañana» se detecta; «15 minutos antes» y
+  el enlace de Maps de una cita presencial ya no borran la respuesta; entiende
+  respuestas en inglés.
+- **Tope por negocio** (`DISPATCH_MAX_POR_ORG`) sin carrera entre consumidores.
+- **401/403 del CRM** terminales también al enviar, al leer el contexto y al
+  bajar un adjunto: sin reintentos ni `pending_send`.
+- **Envío diferido**: lotes de 10 con lease de 180 s; no se empieza un envío
+  sin margen de lease (dos réplicas no entregan dos veces).
+- **Herramientas**: solo se ejecuta lo que se le ofreció al modelo (perfil,
+  rol y agenda); el catálogo recibe el contexto del turno.
+- **Cierre sin rumbo**: no se reabre una conversación en handoff o con la
+  ventana cerrada, y en cloud el contexto no se pide dos veces.
+- Logs sin teléfonos también en excepciones y tracebacks; `/health` no se
+  cuelga con la base congelada (2 s); pool HTTP según `DISPATCH_CONCURRENCY`;
+  candados con el esquema (`DATABASE_SCHEMA`); cupos de ensayo por app.
+
 ### Corregido
 
 - **Un negocio reasignado ya no tumba a los demás de la misma Nea**

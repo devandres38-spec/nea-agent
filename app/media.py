@@ -19,6 +19,7 @@ from pathlib import Path
 
 from dataclasses import dataclass
 
+from app.crm import CrmRechazo
 from app.state import AppContext, InboundMessage
 
 logger = logging.getLogger("nea.media")
@@ -36,6 +37,15 @@ _AUDIO_EXT = {
     "audio/amr": "amr",
     "audio/wav": "wav",
 }
+
+
+# 071 (D12): el marcador de una imagen que el modelo SÍ va a ver, y el que lo
+# reemplaza cuando el modelo del negocio resulta no ver imágenes.
+IMAGEN_ADJUNTA = "la tienes adjunta, puedes verla."
+IMAGEN_SIN_VISION = (
+    "pero por aquí no puedes ver imágenes. Con honestidad: dile que no "
+    "alcanzas a verla y pídele que te cuente qué muestra."
+)
 
 
 @dataclass
@@ -64,7 +74,7 @@ def _honest_failure(msg: InboundMessage) -> MediaPart:
     return MediaPart(
         text=(
             f"[El lead mandó {que} que NO pudiste abrir/procesar."
-            f"{_caption_line(msg, 'ese contenido')} Sé honesta: dile que no lo"
+            f"{_caption_line(msg, 'ese contenido')} Con honestidad: dile que no lo"
             " pudiste abrir y pídele el contenido en texto o nota de voz.]"
         )
     )
@@ -94,13 +104,13 @@ async def _image(ctx: AppContext, msg: InboundMessage) -> MediaPart:
         return MediaPart(
             text=(
                 "[El lead mandó una imagen demasiado pesada para verla."
-                f"{caption} Sé honesta si hace falta.]"
+                f"{caption} Dilo con honestidad si hace falta.]"
             )
         )
     mime_clean = (mime or msg.media_mime or "image/jpeg").split(";")[0].strip()
     uri = f"data:{mime_clean};base64,{base64.b64encode(data).decode()}"
     return MediaPart(
-        text=f"[El lead mandó una imagen — la tienes adjunta, puedes verla.{caption}]",
+        text=f"[El lead mandó una imagen — {IMAGEN_ADJUNTA}{caption}]",
         image_data_uri=uri,
     )
 
@@ -148,8 +158,8 @@ async def _document(ctx: AppContext, msg: InboundMessage) -> MediaPart:
         return MediaPart(
             text=(
                 f"[El lead mandó el documento '{filename}' pero no pudiste leer"
-                f" su contenido.{_caption_line(msg, 'el documento')} Sé honesta"
-                " y pídele lo importante en texto.]"
+                f" su contenido.{_caption_line(msg, 'el documento')} Con honestidad,"
+                " pídele lo importante en texto.]"
             )
         )
     return MediaPart(
@@ -198,7 +208,7 @@ async def _video(ctx: AppContext, msg: InboundMessage) -> MediaPart:
     return MediaPart(
         text=(
             "[El lead mandó un video — NO puedes ver videos todavía."
-            f"{_caption_line(msg, 'el video')} Sé honesta y ofrécele que te lo"
+            f"{_caption_line(msg, 'el video')} Con honestidad, ofrécele que te lo"
             " cuente en texto o con una nota de voz (esas sí las entiendes).]"
         )
     )
@@ -208,7 +218,7 @@ async def _fallback(ctx: AppContext, msg: InboundMessage) -> MediaPart:
     return MediaPart(
         text=(
             f"[El lead mandó contenido que no puedes ver (tipo: {msg.type})."
-            " Sé honesta: pídele que te lo mande como texto o nota de voz.]"
+            " Con honestidad: pídele que te lo mande como texto o nota de voz.]"
         )
     )
 
@@ -230,6 +240,10 @@ async def describe_item(ctx: AppContext, msg: InboundMessage) -> MediaPart:
     handler = _HANDLERS.get(msg.type, _fallback)
     try:
         return await handler(ctx, msg)
+    except CrmRechazo:
+        # Auditoría 071 (A-2): la credencial ya no vale. No es un adjunto que
+        # no se pudo abrir: el turno entero se corta (terminal).
+        raise
     except Exception:
         logger.exception(
             "media %s (id=%s) no se pudo procesar — fallback honesto",

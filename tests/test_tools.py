@@ -117,8 +117,11 @@ async def test_reservar_con_un_meet_confirma_con_el_enlace_neutro(runtime_y_ctx,
         {"start_utc": SLOT_ISO, "dia_confirmado": "sí, el lunes", "recordatorios_aceptados": False},
     )
     assert result["ok"] is True
+    # 071 (D17, R4): el texto del modelo se queda; como no trae ni la fecha ni
+    # el enlace, se le añaden debajo. Antes se tiraba por la plantilla.
     assert runtime.finalize_reply("¡Listo!") == (
-        "Listo, tu cita quedó confirmada para lunes 20 de julio, 10:00 am.\n\n"
+        "¡Listo!\n\n"
+        "📅 lunes 20 de julio, 10:00 am\n"
         "Enlace de la reunión: https://meet.google.com/abc"
     )
 

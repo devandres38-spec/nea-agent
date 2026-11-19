@@ -206,3 +206,78 @@ def _fila(encabezado: list[str], celdas: list[str]) -> str:
     if not pares:
         return celdas[0]
     return f"{celdas[0]} — " + ", ".join(pares)
+
+
+# ──────────────────────────────────────── 071 (D18): formato por canal ───
+#
+# WhatsApp pinta `*negrita*` y `_cursiva_`; Instagram, Messenger y TikTok
+# enseñan los asteriscos tal cual. El CRM ya los quita al enviar
+# (`plainSocialText`, vocero-crm spec 024), pero el historial de Nea y la
+# detección de repetidos comparan el texto de Nea: aquí se deja igual de plano
+# que lo que el lead lee. Gemelo de `src/lib/social-text.ts`, con los mismos
+# vectores en las pruebas de los dos repos
+# (`tests/fixtures/texto_plano_vectores.json`).
+
+_SIMPLE = re.compile(
+    r"(^|[\s(¿¡\"'«])([*_~`])(?=\S)([^\n]*?\S)\2(?=$|[\s.,!?;:)\"'»…])", re.M
+)
+_TP_ENLACE = re.compile(r"\[([^\]\n]+)\]\((https?://[^\s)]+)\)")
+_TP_URL = re.compile(r"https?://[^\s<>]+")
+_TP_BLOQUE = re.compile(r"```[a-zA-Z0-9]*\n?([\s\S]*?)```")
+_TP_TITULO = re.compile(r"^[ \t]{0,3}#{1,6}[ \t]+(.+?)[ \t]*#*[ \t]*$", re.M)
+_TP_VINETA = re.compile(r"^([ \t]*)[-*+][ \t]+(?=\S)", re.M)
+_TP_DOBLES = (
+    re.compile(r"\*\*(?=\S)([^\n]*?\S)\*\*"),
+    re.compile(r"__(?=\S)([^\n]*?\S)__"),
+    re.compile(r"~~(?=\S)([^\n]*?\S)~~"),
+)
+_TP_MARCA = re.compile("\x00(\\d+)\x00")
+
+
+def texto_plano(texto: str) -> str:
+    """Gemelo de `plainSocialText` del CRM: sin marcas, mismo contenido.
+
+    Conservador como el original: una marca solo se quita si abre pegada a
+    una palabra y cierra pegada a otra. Las URL quedan intactas. Idempotente.
+    """
+    urls: list[str] = []
+
+    def guardar(url: str) -> str:
+        urls.append(url)
+        return f"\x00{len(urls) - 1}\x00"
+
+    def enlace(m: re.Match[str]) -> str:
+        label, url = m.group(1), m.group(2)
+        return guardar(url) if label.strip() == url else f"{label}: {guardar(url)}"
+
+    out = _TP_ENLACE.sub(enlace, texto)
+    out = _TP_URL.sub(lambda m: guardar(m.group(0)), out)
+    out = _TP_BLOQUE.sub(lambda m: re.sub(r"\n$", "", m.group(1)), out)
+    out = _TP_TITULO.sub(r"\1", out)
+    out = _TP_VINETA.sub(r"\1• ", out)
+    for doble in _TP_DOBLES:
+        out = doble.sub(r"\1", out)
+    for _ in range(4):
+        siguiente = _SIMPLE.sub(r"\1\3", out)
+        if siguiente == out:
+            break
+        out = siguiente
+    return _TP_MARCA.sub(lambda m: urls[int(m.group(1))] if int(m.group(1)) < len(urls) else "", out)
+
+
+def a_texto_plano(texto: str) -> str:
+    """Markdown → WhatsApp (tablas, títulos, enlaces) → sin marcas."""
+    if not texto:
+        return texto
+    return texto_plano(a_whatsapp(texto))
+
+
+def formatear_para(texto: str, canal: str | None) -> str:
+    """El texto como lo lee el lead en SU canal.
+
+    WhatsApp (o sin canal, como el seguimiento de siempre): `a_whatsapp`. En
+    las redes, texto plano.
+    """
+    if (canal or "").strip().lower() in ("", "whatsapp"):
+        return a_whatsapp(texto)
+    return a_texto_plano(texto)

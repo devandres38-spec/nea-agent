@@ -45,9 +45,13 @@ import base64
 import hashlib
 import hmac
 import logging
+from collections import OrderedDict
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
+import httpx
+
+from app.agenda import SondaDeAgenda
 from app.crm_brains import BrainsCrmClient
 from app.llm import OpenAiLlm
 from app.profile import ProfileProvider
@@ -77,68 +81,106 @@ def credencial_derivada(secreto_despliegue: str, organization_id: str) -> str:
     return base64.urlsafe_b64encode(mac).rstrip(b"=").decode()
 
 
+def limites_http(dispatch_concurrency: int) -> httpx.Limits:
+    """El pool HTTP compartido hacia el CRM: nunca menos de 32 conexiones."""
+    maximo = max(32, int(dispatch_concurrency) * 2 + 8)
+    return httpx.Limits(max_connections=maximo, max_keepalive_connections=maximo // 2)
+
+
 class RegistroDeOrganizaciones:
-    """Un cliente del CRM por organización, creado a demanda.
+    """Lo que esta Nea necesita para hablar con el CRM en nombre de N negocios.
 
-    Se cachean porque cada uno tiene su propio pool de conexiones HTTP: crear
-    uno por mensaje abriría y cerraría sockets en cada turno contra el mismo
-    CRM.
+    vocero-crm 071 (D3, D4) — Ya no cachea un cliente del CRM por
+    organización. Ese cliente guardaba en la instancia lo que traía el último
+    contexto (perfil, IA, capacidades) y lo compartían todos los turnos del
+    negocio: con turnos concurrentes, uno leía lo del otro. Ahora:
 
-    La caché es por `organization_id` y no por slug: el slug es lo que viaja en
-    la cabecera, pero el id es lo que firma la credencial. Si un miembro
-    renombrara su subdominio, la credencial seguiría siendo la correcta.
+    - Hay UN transporte HTTP hacia el CRM para todos los negocios (todos van
+      al mismo host): un solo pool de sockets, con límites, que se cierra al
+      apagar y nunca a media conversación.
+    - `cliente()` devuelve un cliente NUEVO y ligero cada vez —uno por turno—
+      con la credencial derivada de esa organización en cada petición. Lo que
+      aprende del turno muere con él.
+    - La cabecera `X-Vocero-Organization` lleva el **id** (el CRM acepta slug
+      o id): si el negocio cambia de subdominio, un worker que despierta horas
+      después sigue entrando. La credencial ya se firmaba con el id.
     """
+
+    # Cuántos clientes del modelo se recuerdan (uno por organización y
+    # modelo). Al pasarse se suelta el más viejo: no se cierra nada, porque el
+    # transporte es el compartido.
+    MAX_LLMS = 256
+
+    # Sondas de agenda por negocio: una por organización vista (son pocas).
+    MAX_SONDAS = 4096
 
     def __init__(
         self,
         base_url: str,
         secreto_despliegue: str,
         *,
-        nombre_por_defecto: str = "Nea",
+        nombre_por_defecto: str = "Asistente",
         brief_path: str | None = None,
+        agenda_ttl: float = 60.0,
+        dispatch_concurrency: int = 8,
     ) -> None:
         self._base_url = base_url
         self._secreto = secreto_despliegue
         self._nombre = nombre_por_defecto
         self._brief = brief_path
-        self._clientes: dict[str, BrainsCrmClient] = {}
-        self._perfiles: dict[str, ProfileProvider] = {}
+        self._http = httpx.AsyncClient(
+            base_url=base_url.rstrip("/"),
+            timeout=15.0,
+            # Auditoría 071 (B-1): el pool crece con los turnos en vuelo
+            # (~2 llamadas solapadas por turno + el proxy del LLM).
+            limits=limites_http(dispatch_concurrency),
+        )
         # Cacheados por la tupla completa y no por organizacion: si el miembro
         # cambia de modelo, la tupla cambia y el siguiente turno ya usa el
         # cliente nuevo sin que nadie tenga que invalidar nada.
-        self._llms: dict[tuple[str, str, str, str], OpenAiLlm] = {}
+        self._llms: OrderedDict[tuple[str, str, str, str], OpenAiLlm] = OrderedDict()
+        self._agenda_ttl = agenda_ttl
+        self._sondas: OrderedDict[str, SondaDeAgenda] = OrderedDict()
 
     def cliente(self, organization_id: str, slug: str) -> BrainsCrmClient:
-        cliente = self._clientes.get(organization_id)
-        if cliente is None:
-            cliente = BrainsCrmClient(
-                self._base_url,
-                credencial_derivada(self._secreto, organization_id),
-                slug,
-            )
-            self._clientes[organization_id] = cliente
-            logger.info(
-                "organización %s (%s): cliente del CRM creado", slug, organization_id
-            )
-        return cliente
+        """Un cliente del CRM para UN turno de esa organización."""
+        return BrainsCrmClient(
+            self._base_url,
+            credencial_derivada(self._secreto, organization_id),
+            organization_id,
+            client=self._http,
+            compartido=True,
+        )
 
-    def perfil(self, organization_id: str, slug: str) -> ProfileProvider:
-        """El proveedor de perfil de esa organizacion, con su propia cache.
+    def sonda(self, organization_id: str, slug: str) -> SondaDeAgenda:
+        """071 (D5) — La sonda de agenda de ESE negocio.
 
-        Uno por organizacion y no uno por turno: `ProfileProvider` cachea con
-        TTL, y rehacerlo en cada mensaje tiraria esa cache al suelo. Uno por
-        organizacion mantiene la cache Y garantiza que el perfil de un
-        negocio no se le sirva a otro.
+        Antes era una para toda la Nea, preguntando con el centinela (siempre
+        «sí»), así que solo cambiaba cuando una herramienta de CUALQUIER
+        negocio chocaba con un 404: uno apagaba la agenda de todos durante el
+        TTL. Ahora cada negocio tiene la suya, con su credencial. Con un CRM
+        que dice `agendaEnabled` en el contexto casi no se usa (respaldo).
         """
-        proveedor = self._perfiles.get(organization_id)
-        if proveedor is None:
-            proveedor = ProfileProvider(
-                self.cliente(organization_id, slug),
-                default_name=self._nombre,
-                brief_path=self._brief,
-            )
-            self._perfiles[organization_id] = proveedor
-        return proveedor
+        sonda = self._sondas.get(organization_id)
+        if sonda is None:
+            sonda = SondaDeAgenda(self.cliente(organization_id, slug), ttl=self._agenda_ttl)
+            self._sondas[organization_id] = sonda
+            while len(self._sondas) > self.MAX_SONDAS:
+                self._sondas.popitem(last=False)
+        else:
+            self._sondas.move_to_end(organization_id)
+        return sonda
+
+    def perfil(self, cliente: BrainsCrmClient) -> ProfileProvider:
+        """El perfil de ESTE turno: lo lee del contexto que trajo su cliente.
+
+        En esta superficie el perfil viaja dentro del contexto y
+        `ProfileProvider` no lo cachea entre turnos (`cloud`), así que basta
+        uno por turno, atado al cliente del turno.
+        """
+        return ProfileProvider(
+            cliente, default_name=self._nombre, brief_path=self._brief
+        )
 
     def llm(
         self,
@@ -169,13 +211,16 @@ class RegistroDeOrganizaciones:
         credencial = credencial_derivada(self._secreto, organization_id)
         clave = (credencial, model, transcribe, base_url)
         cliente = self._llms.get(clave)
-        if cliente is None:
+        if cliente is not None:
+            self._llms.move_to_end(clave)
+        else:
             cliente = OpenAiLlm(
                 credencial,
                 model,
                 transcribe_model=transcribe,
                 base_url=base_url,
-                default_headers={"X-Vocero-Organization": slug},
+                default_headers={"X-Vocero-Organization": organization_id},
+                http_client=self._http,
                 # Los ajustes de velocidad son de esta Nea, no del miembro:
                 # el CRM reenvia el cuerpo TAL CUAL, asi que `extra_body`
                 # llega al proveedor igual que en mono-organizacion.
@@ -186,6 +231,8 @@ class RegistroDeOrganizaciones:
                 timeout=por_defecto.llm_timeout_seconds,
             )
             self._llms[clave] = cliente
+            while len(self._llms) > self.MAX_LLMS:
+                self._llms.popitem(last=False)
         return cliente
 
     def http_de_ensayo(self, organization_id: str, slug: str, ficha: str) -> Any:
@@ -203,7 +250,7 @@ class RegistroDeOrganizaciones:
             base_url=self._base_url.rstrip("/"),
             headers={
                 "Authorization": f"Bearer {credencial_derivada(self._secreto, organization_id)}",
-                "X-Vocero-Organization": slug,
+                "X-Vocero-Organization": organization_id,
                 "X-Vocero-Ensayo": ficha,
             },
             timeout=15.0,
@@ -232,21 +279,16 @@ class RegistroDeOrganizaciones:
             # Un ensayo es de texto: no transcribe.
             transcribe_model="",
             base_url=base_url,
-            default_headers={"X-Vocero-Organization": slug, "X-Vocero-Ensayo": ficha},
+            default_headers={"X-Vocero-Organization": organization_id, "X-Vocero-Ensayo": ficha},
             reasoning_effort=por_defecto.llm_reasoning_effort,
             provider_sort=por_defecto.llm_provider_sort,
             timeout=por_defecto.llm_timeout_seconds,
         )
 
     async def aclose(self) -> None:
-        for cliente in self._clientes.values():
-            await cliente.aclose()
-        self._clientes.clear()
-        # Los perfiles y los LLM cuelgan de esos clientes: dejarlos vivos
-        # apuntando a conexiones cerradas es un fallo que solo aparece si la
-        # app se reinicia en caliente, y entonces cuesta encontrarlo.
-        self._perfiles.clear()
+        """Cierra el transporte compartido. Solo al apagar la app."""
         self._llms.clear()
+        await self._http.aclose()
 
 
 class CrmSinOrganizacion:
@@ -327,6 +369,27 @@ class LlmSinOrganizacion:
             f"arma el despacho, no el arranque"
         )
 
+def contexto_del_turno(ctx: "AppContext") -> "AppContext":
+    """vocero-crm 071 (D3) — El `AppContext` de UN turno, fuera de multiorg.
+
+    Una copia, siempre: el turno escribe en su contexto (`agenda_enabled`) y
+    con turnos concurrentes esa escritura no puede alcanzar a otro. El cliente
+    del CRM es una vista del de la app (`para_turno`): mismo transporte, su
+    propio estado. En cloud de un negocio el perfil viaja dentro del contexto
+    de la conversación, así que también es del turno.
+    """
+    para_turno = getattr(ctx.crm, "para_turno", None)
+    crm = para_turno() if callable(para_turno) else ctx.crm
+    profile = ctx.profile
+    if ctx.settings.cloud_mode and crm is not ctx.crm:
+        profile = ProfileProvider(
+            crm,
+            default_name=ctx.settings.agent_name,
+            brief_path=ctx.settings.brief_path or None,
+        )
+    return replace(ctx, crm=crm, profile=profile)
+
+
 def ctx_de_organizacion(
     ctx: "AppContext",
     organization_id: str,
@@ -350,10 +413,11 @@ def ctx_de_organizacion(
         return ctx
     if not organization_id or ctx.registro is None:
         return None
+    cliente = ctx.registro.cliente(organization_id, organization_slug)
     return replace(
         ctx,
-        crm=ctx.registro.cliente(organization_id, organization_slug),
-        profile=ctx.registro.perfil(organization_id, organization_slug),
+        crm=cliente,
+        profile=ctx.registro.perfil(cliente),
         organizacion=(organization_id, organization_slug),
     )
 

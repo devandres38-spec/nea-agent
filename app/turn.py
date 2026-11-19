@@ -19,10 +19,10 @@ from zoneinfo import ZoneInfo
 from app import media
 from app.agenda import agenda_vigente
 from app.config import ZONA_POR_DEFECTO, canonical_identity
-from app.crm import CrmConflict, CrmError, CrmUnreachable
-from app.formato import a_whatsapp
+from app.crm import CrmConflict, CrmError, CrmRechazo, CrmUnreachable
+from app.formato import formatear_para
 from app.hostility import ALERT as HOSTILITY_ALERT, hostile_streak
-from app.llm import LlmExhausted
+from app.llm import ImagenNoSoportada, LlmExhausted
 from app.stall import (
     ALERTA as STALL_ALERT,
     FICHA_CIERRE,
@@ -32,10 +32,10 @@ from app.stall import (
 )
 from app.profile import resolve_profile
 from app.prompt import build_system_prompt, zona_del_negocio
+from app.roles import rol_de
 from app.state import AppContext, BotMessage, InboundMessage, utcnow
 from app.tools import (
     ToolRuntime,
-    con_mover_etapa,
     etapas_siguientes,
     profesionales_del_contexto,
     solo_encendidas,
@@ -66,7 +66,9 @@ def _agent_tz(settings: Any) -> ZoneInfo:
 
 
 @asynccontextmanager
-async def conversation_lock(ctx: AppContext, identity: str) -> AsyncIterator[None]:
+async def conversation_lock(
+    ctx: AppContext, identity: str, org_id: str | None = None
+) -> AsyncIterator[None]:
     """Serializa los turnos de UNA conversación.
 
     El CRM agrupa la ráfaga antes de despacharla, pero nada le impide despachar
@@ -77,14 +79,23 @@ async def conversation_lock(ctx: AppContext, identity: str) -> AsyncIterator[Non
 
     Con el candado, el turno tardío espera, y al arrancar re-lee el contexto
     del CRM y el historial — que ya incluyen lo que hizo el turno anterior.
+
+    vocero-crm 071 (D1): entre despachos ese orden ya lo pone la cola (por
+    conversación, en Postgres, también entre réplicas). Este candado queda
+    para lo que corre por fuera de ella —el seguimiento y el olvido— y su
+    clave es (organización, identidad): la misma persona escribiéndole a dos
+    negocios son dos conversaciones.
     """
-    lock = ctx.turn_locks.get(identity)
+    if org_id is None:
+        org_id = (ctx.organizacion or ("", ""))[0]
+    clave = (org_id, identity)
+    lock = ctx.turn_locks.get(clave)
     if lock is None:
-        lock = ctx.turn_locks[identity] = asyncio.Lock()
+        lock = ctx.turn_locks[clave] = asyncio.Lock()
     # El conteo sube ANTES del await: quien ya tiene el objeto en mano queda
     # contado, así que el candado nunca se recicla debajo de un turno que
     # espera (y el diccionario no crece sin fin con cada lead histórico).
-    ctx.turn_lock_users[identity] = ctx.turn_lock_users.get(identity, 0) + 1
+    ctx.turn_lock_users[clave] = ctx.turn_lock_users.get(clave, 0) + 1
     if lock.locked():
         logger.info(
             "turno de %s en vuelo — el mensaje nuevo espera su turno", identity
@@ -93,12 +104,12 @@ async def conversation_lock(ctx: AppContext, identity: str) -> AsyncIterator[Non
         async with lock:
             yield
     finally:
-        remaining = ctx.turn_lock_users.get(identity, 1) - 1
+        remaining = ctx.turn_lock_users.get(clave, 1) - 1
         if remaining <= 0:
-            ctx.turn_lock_users.pop(identity, None)
-            ctx.turn_locks.pop(identity, None)
+            ctx.turn_lock_users.pop(clave, None)
+            ctx.turn_locks.pop(clave, None)
         else:
-            ctx.turn_lock_users[identity] = remaining
+            ctx.turn_lock_users[clave] = remaining
 
 
 @dataclass
@@ -186,6 +197,11 @@ async def handle_flush(
     try:
         async with conversation_lock(ctx, identity):
             await run_turn(ctx, identity, items, turno)
+    except CrmRechazo as exc:
+        if propagate_errors:
+            raise
+        # A-2: terminal; el handoff de emergencia tampoco pasaría.
+        logger.error("turno de %s: el CRM rechazó la credencial (%s) — silencio", identity, exc)
     except Exception:
         if propagate_errors:
             raise
@@ -283,30 +299,34 @@ async def run_turn(
     # mensaje con contenido la reabre en el acto —«¿cuánto cuesta?» merece
     # respuesta aunque llegue a los diez minutos— y, pasado el enfriamiento
     # (STALL_COOLDOWN_HOURS), la reabre cualquiera.
+    # Auditoría 071 (A-8): la reapertura se DECIDE aquí pero se hace tras la
+    # puerta 2 — una conversación en handoff o con la ventana cerrada no se
+    # toca —, y si esta puerta ya trajo el contexto (cloud), la 2 lo reusa.
+    reabrir_motivo: str | None = None
+    contexto_previo: dict[str, Any] | None = None
     if conv.stalled_at is not None:
         enfriando = utcnow() - conv.stalled_at < timedelta(
             hours=settings.stall_cooldown_hours
         )
         if enfriando and not any(trae_contenido(m.type, m.text) for m in inbound):
-            logger.info(
-                "turno %s: relleno tras el cierre por falta de rumbo — silencio",
-                identity,
-            )
-            return
-        logger.info(
-            "turno %s: %s — reabro",
-            identity,
+            activo, contexto_previo = await _cierre_sin_rumbo_activo(ctx, identity)
+            if activo:
+                logger.info(
+                    "turno %s: relleno tras el cierre por falta de rumbo — silencio",
+                    identity,
+                )
+                return
+        reabrir_motivo = (
             "el lead escribió algo con contenido"
             if enfriando
-            else "el lead volvió tras el enfriamiento",
+            else "el lead volvió tras el enfriamiento"
         )
-        await _reabrir(ctx, conv, identity)
 
     # --- Gate 2: contexto del CRM (aiEnabled, ventana) --------------------
     # Un CRM que no contesta no es un «no»: la ráfaga se reintenta
     # (handle_flush). Solo el 404 de verdad termina en silencio.
     try:
-        context = await _fetch_context(ctx, identity)
+        context = contexto_previo or await _fetch_context(ctx, identity)
     except CrmUnreachable as exc:
         raise TurnoSinCrm(str(exc)) from exc
     if context is None:
@@ -325,6 +345,9 @@ async def run_turn(
         return
     # Sin despacho (el seguimiento) la conversación del CRM se conoce aquí.
     conv = await _olvidar_si_es_otra(ctx, conv, str(crm_conv_id), identity)
+    if reabrir_motivo is not None and conv.stalled_at is not None:
+        logger.info("turno %s: %s — reabro", identity, reabrir_motivo)
+        await _reabrir(ctx, conv, identity)
     # Desde aquí el turno es de Nea: si revienta, la red de seguridad de
     # handle_flush sabe a qué conversación del CRM avisarle.
     turno.crm_conversation_id = str(crm_conv_id)
@@ -371,10 +394,11 @@ async def run_turn(
     # ¿El CRM agenda HOY? La respuesta caduca (app/agenda.py): si venció, este
     # turno la vuelve a pedir, con timeout corto. Así encender AGENDA en el
     # CRM llega sin reiniciar Nea, y un 404 de la bandera no apaga para siempre.
-    ctx.agenda_enabled = await agenda_vigente(ctx)
     referral = next((m.referral_headline for m in inbound if m.referral_headline), None)
     offered = await ctx.store.get_offered_slots(conv.id)
     profile = await resolve_profile(ctx)
+    # 071 (D5): lo que diga el CRM de ESTE negocio; si no lo dice, la sonda.
+    ctx.agenda_enabled = await agenda_vigente(ctx, profile)
     # 034 — Con «agendar» apagada en el CRM, el turno se porta como contra un
     # CRM sin agenda: no se le enseñan las herramientas y el prompt dice que
     # por aquí no se agenda.
@@ -383,6 +407,10 @@ async def run_turn(
     # La zona es la del negocio de ESTE turno (la manda el CRM), no la de la
     # instancia: una Nea atiende a negocios de zonas distintas.
     tz = zona_del_negocio(context, _agent_tz(settings))
+    # 071 (D18): por dónde escribe el lead decide el formato de la respuesta.
+    canal = next((m.channel for m in inbound if m.channel), None) or (
+        (context.get("contact") or {}).get("channel")
+    )
     system = build_system_prompt(
         profile=profile,
         context=context,
@@ -392,7 +420,7 @@ async def run_turn(
         agenda=ctx.agenda_enabled,
         tz=tz,
         recordatorios=bool(getattr(ctx.crm, "supports_agenda_v2", False)),
-        canal=next((m.channel for m in inbound if m.channel), None),
+        canal=canal,
     )
     # Se traen más mensajes de los que ve el LLM: el candado de cierre cuenta
     # el hilo COMPLETO del lead, no solo la ventana de contexto.
@@ -418,7 +446,8 @@ async def run_turn(
         for m in recientes
         if m.role == "user" and m.id > conv.stall_since_message_id
     ]
-    cerrar_sin_rumbo = streak < 3 and sin_rumbo(
+    # 071 (D16): el negocio (o el rol) puede apagar el cierre sin rumbo.
+    cerrar_sin_rumbo = streak < 3 and _stall_activo(profile) and sin_rumbo(
         del_lead,
         conv.phase,
         racha=settings.stall_filler_streak,
@@ -433,9 +462,12 @@ async def run_turn(
         )
         messages.append({"role": "system", "content": STALL_ALERT})
     if image_uris:
-        # El último user message de este turno se vuelve multimodal: el
-        # historial persiste solo el texto; las imágenes viven en ESTE turno.
-        last = messages[-1]
+        # El último mensaje DEL LEAD se vuelve multimodal: el historial
+        # persiste solo el texto; las imágenes viven en ESTE turno. Al último
+        # `user`, no a `messages[-1]` (071, FR-010): con una alerta de
+        # hostilidad o de cierre ese es un `system`, y una imagen en un
+        # `system` la rechazan los proveedores — el turno entero fallaba.
+        last = _ultimo_del_lead(messages)
         last["content"] = [{"type": "text", "text": str(last["content"])}] + [
             {"type": "image_url", "image_url": {"url": uri}} for uri in image_uris
         ]
@@ -450,9 +482,18 @@ async def run_turn(
         conversacion_reciente=_conversacion_reciente(history),
         etapas=etapas_siguientes(context),
         profesionales=profesionales_del_contexto(context),
+        context=context,
     )
     try:
-        final_text = await _tool_loop(ctx, messages, runtime)
+        try:
+            final_text = await _tool_loop(ctx, messages, runtime)
+        except ImagenNoSoportada as exc:
+            # 071 (D12): el modelo de este negocio no ve. Sin handoff `error`:
+            # se quita la imagen, el marcador dice la verdad y se piensa UNA
+            # vez más. Si eso también falla, es el camino de siempre.
+            logger.warning("turno %s: el modelo no ve imágenes (%s) — sigo sin ellas", identity, exc)
+            _sin_imagenes(messages)
+            final_text = await _tool_loop(ctx, messages, runtime)
     except LlmExhausted as exc:
         logger.error(
             "turno %s: LLM agotó reintentos (%s) — silencio + handoff error",
@@ -469,7 +510,7 @@ async def run_turn(
     # tiene, o escribió una nota para sí mismo. Se le pide UNA vez más; si
     # vuelve a salir mal, silencio + handoff error, igual que un LLM caído.
     previos = [m.content for m in recientes if m.role == "assistant"]
-    motivo = _respuesta_invalida(final_text, previos)
+    motivo = _respuesta_invalida(final_text, previos, canal)
     if motivo is not None:
         logger.warning("turno %s: la respuesta %s — pido otra", identity, motivo)
         messages.append({"role": "assistant", "content": final_text})
@@ -478,7 +519,7 @@ async def run_turn(
             final_text = await _tool_loop(ctx, messages, runtime)
         except LlmExhausted:
             final_text = None
-        if final_text is None or _respuesta_invalida(final_text, previos):
+        if final_text is None or _respuesta_invalida(final_text, previos, canal):
             logger.error("turno %s: la segunda respuesta tampoco sirve — silencio + handoff error", identity)
             await _safe_handoff(ctx, str(crm_conv_id), "error", turno)
             await ctx.store.update_conversation(conv.id, phase="cerrada", followup_due_at=None)
@@ -495,7 +536,7 @@ async def run_turn(
     # el formato que el lead ve roto (app/formato.py).
     sent = False
     if final_text and final_text.strip():
-        final_text = a_whatsapp(runtime.finalize_reply(final_text.strip()))
+        final_text = formatear_para(runtime.finalize_reply(final_text.strip()), canal)
     if final_text and final_text.strip():
         sent = await _send(ctx, conv.id, str(crm_conv_id), final_text)
         if sent:
@@ -536,6 +577,42 @@ async def run_turn(
             cerrada_en.astimezone(tz).isoformat(timespec="minutes"),
             identity,
         )
+
+
+def _stall_activo(profile: Any) -> bool:
+    """¿Cierra este negocio las conversaciones sin rumbo? (071, D16)
+
+    Lo apaga el dueño (`stallEnabled=false`) o un rol que no cierra. Los
+    umbrales (`STALL_*`) siguen siendo de la instancia.
+    """
+    return bool(getattr(profile, "stall_enabled", True)) and rol_de(
+        getattr(profile, "role", None)
+    ).politica_sin_rumbo
+
+
+async def _cierre_sin_rumbo_activo(
+    ctx: AppContext, identity: str
+) -> tuple[bool, dict[str, Any] | None]:
+    """La puerta 1.5 solo calla rellenos si el negocio cierra sin rumbo.
+
+    Corre antes del contexto, así que el perfil puede no estar: en cloud viaja
+    CON el contexto, y se pide aquí (solo en este caso raro: conversación
+    cerrada + relleno durante el enfriamiento). Devuelve ese contexto para que
+    la puerta 2 no lo pida otra vez (A-8). Ante la duda —el CRM no contesta—
+    se queda como siempre: callar. Un `CrmRechazo` sube: es terminal.
+    """
+    contexto: dict[str, Any] | None = None
+    try:
+        if getattr(ctx.settings, "cloud_mode", False):
+            contexto = await _fetch_context(ctx, identity)
+            if contexto is None:
+                return True, None
+        return _stall_activo(await resolve_profile(ctx)), contexto
+    except CrmRechazo:
+        raise
+    except Exception as exc:
+        logger.debug("turno %s: no pude leer si cierra sin rumbo (%s) — callo", identity, exc)
+        return True, None
 
 
 async def _reabrir(ctx: AppContext, conv: Any, identity: str) -> None:
@@ -647,6 +724,8 @@ async def _fetch_context(ctx: AppContext, identity: str) -> dict[str, Any] | Non
         caida = None
         try:
             context = await ctx.crm.get_context(identity)
+        except CrmRechazo:
+            raise  # A-2: terminal; reintentar solo suma al límite del CRM
         except CrmUnreachable as exc:
             logger.warning(
                 "context de %s: el CRM no contestó (intento %d): %s",
@@ -677,13 +756,15 @@ async def _fetch_context(ctx: AppContext, identity: str) -> dict[str, Any] | Non
 
 REPETICION_MIN = 40
 CORRIGE_RESPUESTA = (
-    "Ese texto NO se le envió al lead: {motivo}. Escribe ahora el mensaje de "
-    "WhatsApp que responde a su ÚLTIMO mensaje, en tu voz y sin repetir nada "
-    "que ya le hayas escrito."
+    "Ese texto NO se le envió al lead: {motivo}. Escribe ahora el mensaje "
+    "que responde a su ÚLTIMO mensaje, en tu voz y sin repetir nada que ya le "
+    "hayas escrito."
 )
 
 
-def _respuesta_invalida(texto: str | None, previos: list[str]) -> str | None:
+def _respuesta_invalida(
+    texto: str | None, previos: list[str], canal: str | None = None
+) -> str | None:
     """Por qué este texto no puede salir, o None si puede.
 
     Dos fallos que el lead SÍ ve y que ningún prompt evita del todo: repetirle
@@ -697,13 +778,13 @@ def _respuesta_invalida(texto: str | None, previos: list[str]) -> str | None:
     # de Markdown suelto («[Agenda](https://…)») no pasa por nota entre
     # corchetes, y una repetición no se escapa por traer otras negritas que
     # el mensaje ya guardado (que se guardó convertido).
-    plano = " ".join(a_whatsapp(texto).split())
+    plano = " ".join(formatear_para(texto, canal).split())
     if re.fullmatch(r"[(\[].*[)\]]", plano):
         return "era una nota interna entre paréntesis"
     # Un «¡Va!» o un «Perfecto 👍» pueden repetirse sin que nadie lo note; un
     # mensaje con contenido repetido entero, no.
     if len(plano) >= REPETICION_MIN and any(
-        plano == " ".join(a_whatsapp(p).split()) for p in previos
+        plano == " ".join(formatear_para(p, canal).split()) for p in previos
     ):
         return "repetía palabra por palabra un mensaje que ya le enviaste"
     return None
@@ -730,14 +811,15 @@ async def _tool_loop(
     for _ in range(MAX_TOOL_ROUNDS):
         reply = await ctx.llm.complete(
             messages,
+            # A-7: el catálogo lleva el contexto del turno (`esquema_de_ficha`,
+            # `move_stage`) y sale del mismo registro que valida `execute`.
             tools=solo_encendidas(
-                con_mover_etapa(
-                    tool_schemas(
-                        ctx.agenda_enabled,
-                        bool(getattr(ctx.crm, "supports_agenda_v2", False)),
-                        bool(getattr(ctx.crm, "supports_coordination", False)),
-                    ),
-                    getattr(runtime, "etapas", []),
+                tool_schemas(
+                    ctx.agenda_enabled,
+                    bool(getattr(ctx.crm, "supports_agenda_v2", False)),
+                    bool(getattr(ctx.crm, "supports_coordination", False)),
+                    context=getattr(runtime, "contexto", None),
+                    etapas=list(getattr(runtime, "etapas", []) or []),
                 ),
                 getattr(runtime, "_profile", None),
             ),
@@ -790,6 +872,10 @@ async def _send(ctx: AppContext, conv_id: int, crm_conv_id: str, text: str) -> b
             # ai_paused / window_closed: silencio respetuoso, sin reintento.
             logger.info("envío bloqueado por el CRM (%s) — silencio", exc.code)
             return False
+        except CrmRechazo:
+            # A-2: la credencial ya no vale (negocio suspendido, rotado…). Ni
+            # reintento ni pending_send: con ella no va a salir nunca.
+            raise
         except CrmError as exc:
             logger.warning("envío falló (intento %d): %s", attempt + 1, exc)
             if attempt < SEND_ATTEMPTS - 1:
@@ -825,6 +911,29 @@ async def _safe_handoff(
     # Queda anotado para que la red de seguridad no registre otro encima.
     if turno is not None:
         turno.handoff = reason
+
+
+def _ultimo_del_lead(messages: list[dict[str, Any]]) -> dict[str, Any]:
+    """El último mensaje `user` del prompt (el que trae la ráfaga del turno)."""
+    for m in reversed(messages):
+        if m.get("role") == "user":
+            return m
+    nuevo: dict[str, Any] = {"role": "user", "content": ""}
+    messages.append(nuevo)
+    return nuevo
+
+
+def _sin_imagenes(messages: list[dict[str, Any]]) -> None:
+    """Quita las imágenes del prompt y corrige el marcador que las anunciaba."""
+    for m in messages:
+        contenido = m.get("content")
+        if not isinstance(contenido, list):
+            continue
+        texto = "\n".join(
+            str(p.get("text") or "") for p in contenido
+            if isinstance(p, dict) and p.get("type") == "text"
+        )
+        m["content"] = texto.replace(media.IMAGEN_ADJUNTA, media.IMAGEN_SIN_VISION)
 
 
 def _conversacion_reciente(history: list[BotMessage]) -> str:

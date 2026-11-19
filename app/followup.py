@@ -14,12 +14,12 @@ from datetime import datetime
 from typing import Any
 
 from app.crm import CrmConflict, CrmError
-from app.formato import a_whatsapp
+from app.formato import formatear_para
 from app.llm import LlmExhausted
 from app.profile import resolve_profile
 from app.prompt import FOLLOWUP_INSTRUCTION, build_system_prompt, zona_del_negocio
 from app.state import AppContext, Conversation, utcnow
-from app.multiorg import ctx_de_organizacion
+from app.multiorg import contexto_del_turno, ctx_de_organizacion
 from app.turn import conversation_lock
 from app.turn import _agent_tz
 
@@ -67,7 +67,11 @@ class FollowupWorker:
                         conv.wa_identity,
                     )
                     continue
-                async with conversation_lock(self._ctx, conv.wa_identity):
+                if not self._ctx.settings.multi_org:
+                    ctx = contexto_del_turno(ctx)  # 071 (D3)
+                async with conversation_lock(
+                    self._ctx, conv.wa_identity, conv.organization_id
+                ):
                     await self._push(ctx, conv, ultimo_inbound)
             except Exception:
                 logger.exception(
@@ -166,9 +170,11 @@ class FollowupWorker:
         except LlmExhausted as exc:
             logger.warning("followup %s: LLM agotado (%s) — omitido", conv.wa_identity, exc)
             return
-        # Igual que el turno: WhatsApp no pinta Markdown (app/formato.py), y
-        # el historial guarda lo que el lead de verdad recibió.
-        text = a_whatsapp((reply.content or "").strip())
+        # Igual que el turno: WhatsApp no pinta Markdown (app/formato.py), las
+        # redes ningún formato (071, D18), y el historial guarda lo que el
+        # lead de verdad recibió.
+        canal = ((context or {}).get("contact") or {}).get("channel")
+        text = formatear_para((reply.content or "").strip(), canal)
         if not text:
             logger.warning("followup %s: LLM sin texto — omitido", conv.wa_identity)
             return

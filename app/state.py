@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import itertools
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Protocol
 from contextlib import AbstractAsyncContextManager
 from app.dispatch_store import DispatchJob, MemoryDispatchStore
@@ -214,6 +214,16 @@ class Store(Protocol):
         dispatch_id: str = "",
     ) -> int: ...
     async def due_pending_sends(self, now: datetime) -> list[PendingSend]: ...
+    async def claim_pending_sends(
+        self, now: datetime, limit: int = 10, lease_seconds: int = 180
+    ) -> list[PendingSend]:
+        """Los vencidos, reservados (lease) para quien los reclama (071, D6)."""
+        ...
+    async def purgar(
+        self, dias: int, dias_envios: int, lote: int = 1000
+    ) -> dict[str, int] | None:
+        """Retención (071, D7). None = otra réplica está purgando."""
+        ...
     async def mark_pending_send_delivered(self, pending_id: int) -> None: ...
     async def mark_pending_send_abandoned(self, pending_id: int) -> None: ...
     async def reschedule_pending_send(
@@ -384,6 +394,31 @@ class MemoryStore(MemoryDispatchStore):
             and p.next_retry_at <= now
         ]
 
+    async def claim_pending_sends(
+        self, now: datetime, limit: int = 10, lease_seconds: int = 180
+    ) -> list[PendingSend]:
+        vencidos = (await self.due_pending_sends(now))[:limit]
+        for p in vencidos:
+            p.next_retry_at = now + timedelta(seconds=lease_seconds)
+        return vencidos
+
+    async def purgar(
+        self, dias: int, dias_envios: int, lote: int = 1000
+    ) -> dict[str, int] | None:
+        limite = utcnow() - timedelta(days=dias)
+        limite_envios = utcnow() - timedelta(days=dias_envios)
+        inbox = self._inbox()
+        viejas = [k for k, r in inbox.items()
+                  if r["state"] == "done" and r.get("done_at", utcnow()) < limite]
+        for k in viejas:
+            del inbox[k]
+        cerrados = [pid for pid, p in self.pending_sends.items()
+                    if (p.delivered_at or p.abandoned_at) and p.created_at < limite_envios]
+        for pid in cerrados:
+            del self.pending_sends[pid]
+        # `processed` es un set sin fecha en memoria: nada que purgar aquí.
+        return {"dispatch_inbox": len(viejas), "processed_message": 0, "pending_send": len(cerrados)}
+
     async def mark_pending_send_delivered(self, pending_id: int) -> None:
         self.pending_sends[pending_id].delivered_at = utcnow()
 
@@ -453,10 +488,13 @@ class AppContext:
     # AGENDA allá llega sin reiniciar Nea. None = sin sonda (pruebas que fijan
     # `agenda_enabled` a mano).
     agenda_sonda: Any | None = None
+    # Auditoría 071 (B-3): cupos de ensayo de esta app (`app/ensayo.py`).
+    ensayo_cupos: asyncio.Semaphore | None = None
     # Un candado por identidad: los turnos de UNA conversación se serializan.
     # Sin esto, una ráfaga que llega mientras el turno anterior sigue en vuelo
     # abre un segundo turno con contexto viejo (se reservó una cita antes de
     # leer el mensaje que la corregía, y salieron dos respuestas encimadas).
-    turn_locks: dict[str, asyncio.Lock] = field(default_factory=dict)
-    # Cuántos turnos tienen tomado (o esperan) el candado de esa identidad.
-    turn_lock_users: dict[str, int] = field(default_factory=dict)
+    # Clave (organization_id, identidad) desde la 071.
+    turn_locks: dict[tuple[str, str], asyncio.Lock] = field(default_factory=dict)
+    # Cuántos turnos tienen tomado (o esperan) el candado de esa clave.
+    turn_lock_users: dict[tuple[str, str], int] = field(default_factory=dict)
