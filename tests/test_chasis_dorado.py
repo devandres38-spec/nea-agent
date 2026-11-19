@@ -6,7 +6,13 @@ de lo que lee el modelo: cada palabra del chasis salió de un incidente en
 producción. Estas pruebas comparan contra copias guardadas del prompt que
 generaba el código antes del refactor.
 
-Regenerar (solo si un cambio del texto está aprobado en una spec):
+Los dorados de B0 NO se regeneran: son el texto de antes de la 071. La
+prueba les aplica solo los cambios aprobados en la spec (`DELTAS_071`) y exige
+que el resultado sea idéntico byte a byte. Así cualquier otra diferencia —una
+coma— rompe la prueba.
+
+Los casos nuevos de la 071 (trato `usted` y `neutro`) tienen dorados propios.
+Regenerarlos (solo si un cambio del texto está aprobado en una spec):
 
     NEA_ACTUALIZAR_DORADOS=1 pytest tests/test_chasis_dorado.py
 """
@@ -19,6 +25,9 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from dataclasses import replace
+
+from app.chasis.armar import LINEA_IDIOMA, VOZ_TU
 from app.profile import BusinessProfile, profile_from_payload
 from app.crm_brains import _perfil_desde_contexto
 from app.prompt import build_system_prompt
@@ -116,12 +125,44 @@ CASOS = {
 }
 
 
+def aplicar_deltas_071(texto: str, nombre: str) -> str:
+    """Los únicos cambios aprobados sobre el prompt de antes de la 071.
+
+    D15: la regla de idioma, una línea nueva justo después de la del trato.
+    """
+    assert texto.count(VOZ_TU) == 1, nombre
+    return texto.replace(VOZ_TU, VOZ_TU + "\n" + LINEA_IDIOMA)
+
+
 @pytest.mark.parametrize("nombre", sorted(CASOS))
 def test_el_prompt_no_cambia_ni_una_letra(nombre: str) -> None:
     prompt = build_system_prompt(now=AHORA, tz=BOGOTA, **CASOS[nombre])
+    original = (DORADOS / f"{nombre}.txt").read_bytes().decode("utf-8")
+    esperado = aplicar_deltas_071(original, nombre)
+    assert prompt == esperado, f"el prompt de {nombre} cambió más allá de lo aprobado en la 071"
+
+
+# 071 (D15) — Casos nuevos, con dorado propio.
+CASOS_071 = {
+    "071_single_usted": dict(CASOS["single_con_agenda"], profile=replace(PERFIL_SINGLE, treatment="usted")),
+    "071_cloud_neutro": dict(CASOS["cloud_agenda_v2"], profile=replace(_perfil_cloud(), treatment="neutro")),
+}
+
+
+@pytest.mark.parametrize("nombre", sorted(CASOS_071))
+def test_los_tratos_nuevos_tienen_su_dorado(nombre: str) -> None:
+    prompt = build_system_prompt(now=AHORA, tz=BOGOTA, **CASOS_071[nombre])
     archivo = DORADOS / f"{nombre}.txt"
     if os.environ.get("NEA_ACTUALIZAR_DORADOS") == "1":
-        archivo.parent.mkdir(parents=True, exist_ok=True)
         archivo.write_bytes(prompt.encode("utf-8"))
-    esperado = archivo.read_bytes().decode("utf-8")
-    assert prompt == esperado, f"el prompt de {nombre} cambió respecto al dorado"
+    assert prompt == archivo.read_bytes().decode("utf-8")
+
+
+def test_un_trato_solo_cambia_la_linea_de_la_voz() -> None:
+    """Fuera de la línea del trato, `usted` y `neutro` dicen lo mismo que `tu`."""
+    base = build_system_prompt(now=AHORA, tz=BOGOTA, **CASOS["single_con_agenda"])
+    for nombre in CASOS_071:
+        otro = build_system_prompt(now=AHORA, tz=BOGOTA, **CASOS_071[nombre])
+        dif = [(a, b) for a, b in zip(base.split("\n"), otro.split("\n")) if a != b]
+        if nombre.startswith("071_single"):
+            assert len(dif) == 1 and dif[0][0] == VOZ_TU

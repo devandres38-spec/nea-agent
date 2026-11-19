@@ -16,10 +16,28 @@ VOZ_TU = (
     '- Español neutro de negocios, de "tú", frases cortas, cero corporativo. '
     "Si el perfil del negocio define un tono, ese tono manda."
 )
+# 071 (D15) — Los ejemplos del guion van de «tú»: con otro trato se le dice
+# al modelo que los adapte, en vez de reescribir cada ejemplo.
+VOZ_USTED = (
+    '- Español neutro de negocios, de "usted", cordial: frases cortas, cero '
+    "corporativo. Si el perfil del negocio define un tono, ese tono manda. Los "
+    'ejemplos de este guion van de "tú": dilos de "usted".'
+)
+VOZ_NEUTRO = (
+    "- Español neutro de negocios, sin tutear ni ustedear: frases impersonales "
+    'y cortas ("¿qué día queda mejor?"), cero corporativo. Si el perfil del '
+    "negocio define un tono, ese tono manda. Los ejemplos de este guion van de "
+    '"tú": dilos sin "tú" ni "usted".'
+)
+VOCES = {"tu": VOZ_TU, "usted": VOZ_USTED, "neutro": VOZ_NEUTRO}
+# 071 (D15) — Para todos los negocios y tratos.
+LINEA_IDIOMA = "- Si la persona escribe en otro idioma, contéstale en ese idioma."
 
 
 def voz_del_trato(profile: Any) -> str:
-    return VOZ_TU
+    """La línea del trato (desconocido → tú) más la regla de idioma."""
+    voz = VOCES.get(getattr(profile, "treatment", "tu"), VOZ_TU)
+    return voz + "\n" + LINEA_IDIOMA
 
 
 def armar_chasis(profile: Any, medio: str, a_quien: str, *, agenda_v2: bool = False) -> str:

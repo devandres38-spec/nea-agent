@@ -33,6 +33,9 @@ PROFILE_TTL_SECONDS = 300.0
 # contrato de GET /api/bot/profile): cuenta como "sin conocimiento".
 EMPTY_KB_SENTINEL = "(knowledge base vacío)"
 
+# 071 (D15) — Las claves de `TRATOS` del CRM (`src/lib/agent-roles.ts`).
+TRATOS = ("tu", "usted", "neutro")
+
 
 @dataclass(frozen=True)
 class BusinessProfile:
@@ -63,6 +66,12 @@ class BusinessProfile:
     # (`agent.agendaEnabled`, módulo agenda del negocio). `None` = no lo dice
     # (un CRM anterior, `single`): manda la sonda, como siempre.
     agenda_enabled: bool | None = None
+    # 071 (D15) — Cómo trata a los clientes: `tu`, `usted` o `neutro`. Un
+    # valor desconocido (o un CRM que no lo manda) es `tu`, como siempre.
+    treatment: str = "tu"
+    # 071 (D16) — ¿Cierra con amabilidad las conversaciones sin rumbo? Apagado,
+    # tampoco calla los rellenos tras un cierre anterior. Ausente = sí.
+    stall_enabled: bool = True
 
     def permite(self, clave: str) -> bool:
         """¿Está encendida esta herramienta? `escalar` siempre lo está: es la
@@ -101,6 +110,8 @@ def profile_from_payload(payload: dict[str, Any], default_name: str) -> Business
         agenda_enabled=(
             prof["agendaEnabled"] if isinstance(prof.get("agendaEnabled"), bool) else None
         ),
+        treatment=prof["treatment"] if prof.get("treatment") in TRATOS else "tu",
+        stall_enabled=prof["stallEnabled"] if isinstance(prof.get("stallEnabled"), bool) else True,
         **_ia(payload.get("llm")),
     )
 

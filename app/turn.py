@@ -32,6 +32,7 @@ from app.stall import (
 )
 from app.profile import resolve_profile
 from app.prompt import build_system_prompt, zona_del_negocio
+from app.roles import rol_de
 from app.state import AppContext, BotMessage, InboundMessage, utcnow
 from app.tools import (
     ToolRuntime,
@@ -298,7 +299,11 @@ async def run_turn(
         enfriando = utcnow() - conv.stalled_at < timedelta(
             hours=settings.stall_cooldown_hours
         )
-        if enfriando and not any(trae_contenido(m.type, m.text) for m in inbound):
+        if (
+            enfriando
+            and not any(trae_contenido(m.type, m.text) for m in inbound)
+            and await _cierre_sin_rumbo_activo(ctx, identity)
+        ):
             logger.info(
                 "turno %s: relleno tras el cierre por falta de rumbo — silencio",
                 identity,
@@ -430,7 +435,8 @@ async def run_turn(
         for m in recientes
         if m.role == "user" and m.id > conv.stall_since_message_id
     ]
-    cerrar_sin_rumbo = streak < 3 and sin_rumbo(
+    # 071 (D16): el negocio (o el rol) puede apagar el cierre sin rumbo.
+    cerrar_sin_rumbo = streak < 3 and _stall_activo(profile) and sin_rumbo(
         del_lead,
         conv.phase,
         racha=settings.stall_filler_streak,
@@ -559,6 +565,35 @@ async def run_turn(
             cerrada_en.astimezone(tz).isoformat(timespec="minutes"),
             identity,
         )
+
+
+def _stall_activo(profile: Any) -> bool:
+    """¿Cierra este negocio las conversaciones sin rumbo? (071, D16)
+
+    Lo apaga el dueño (`stallEnabled=false`) o un rol que no cierra. Los
+    umbrales (`STALL_*`) siguen siendo de la instancia.
+    """
+    return bool(getattr(profile, "stall_enabled", True)) and rol_de(
+        getattr(profile, "role", None)
+    ).politica_sin_rumbo
+
+
+async def _cierre_sin_rumbo_activo(ctx: AppContext, identity: str) -> bool:
+    """La puerta 1.5 solo calla rellenos si el negocio cierra sin rumbo.
+
+    Corre antes del contexto, así que el perfil puede no estar: en cloud viaja
+    CON el contexto, y se pide aquí (solo en este caso raro: conversación
+    cerrada + relleno durante el enfriamiento). Ante cualquier duda —el CRM no
+    contesta— se queda como siempre: callar.
+    """
+    try:
+        if getattr(ctx.settings, "cloud_mode", False):
+            if await _fetch_context(ctx, identity) is None:
+                return True
+        return _stall_activo(await resolve_profile(ctx))
+    except Exception as exc:
+        logger.debug("turno %s: no pude leer si cierra sin rumbo (%s) — callo", identity, exc)
+        return True
 
 
 async def _reabrir(ctx: AppContext, conv: Any, identity: str) -> None:
