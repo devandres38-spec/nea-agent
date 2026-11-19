@@ -18,6 +18,7 @@ from zoneinfo import ZoneInfo
 import json
 from app.config import ZONA_POR_DEFECTO
 from app.chasis import armar_chasis
+from app.herramientas.ficha import linea_datos_por_reunir
 from app.profile import BusinessProfile
 from app.roles import enfoque_de, rol_de
 from app.state import Conversation, OfferedSlot
@@ -463,6 +464,11 @@ def build_system_prompt(
         lines.append(
             "- Ficha actual del lead: " + json.dumps(filled, ensure_ascii=False)
         )
+    # vocero-crm 072 (D11) — Los obligatorios del negocio que faltan (máx. 3):
+    # solo con esquema y con la ficha encendida. Sin esquema, ni una letra.
+    por_reunir = linea_datos_por_reunir(context) if profile.permite("ficha") else None
+    if por_reunir:
+        lines.append(por_reunir)
 
     headline = referral_headline
     if not headline:
