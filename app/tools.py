@@ -26,6 +26,7 @@ from app.crm import (
     SlotTaken,
 )
 from app.config import ZONA_POR_DEFECTO
+from app.confirmacion import confirmar
 from app.dias import nombra_un_dia
 from app.profile import BusinessProfile
 from app.state import AppContext, Conversation, OfferedSlot
@@ -941,6 +942,7 @@ class ToolRuntime:
         self.booked = True
         meeting_url, link_pending = _meeting(result)
         self.booking_confirmation = {
+            "tipo": "book",
             "label": chosen.label or result.get("label"),
             "meeting_url": meeting_url,
             "link_pending": link_pending,
@@ -970,28 +972,23 @@ class ToolRuntime:
         }
 
     def finalize_reply(self, text: str) -> str:
-        """Booking confirmation is authoritative, not left to model wording.
+        """La confirmación de la cita pasa por el guardarraíl (071, D17).
+
+        Antes se tiraba el texto del modelo y salía una plantilla con «tu»
+        fijo. Ahora: si el texto trae la fecha, la hora y el enlace correctos,
+        sale tal cual; si le falta algo, se le añade un pie; si contradice la
+        cita, la plantilla de siempre con el trato del negocio
+        (`app/confirmacion.py`).
 
         El enlace se nombra neutro: la reunión la entrega un conector (Zoom,
         Google Meet o la sala fija del negocio) y ninguno de los dos CRM dice
-        cuál — `/api/bot/bookings` manda `meetingLink` a secas y
-        `/api/brains/agenda/book` tampoco trae el proveedor del enlace (los
-        `deliveryStates` del contrato v2 son la sincronización con calendario
-        y Zoom, no de dónde es el enlace). Decir "Zoom" a quien le llegó un
-        Meet es justo la clase de dato inventado que el agente no dice.
+        cuál. Decir "Zoom" a quien le llegó un Meet es justo la clase de dato
+        inventado que el agente no dice.
         """
         data = self.booking_confirmation
         if not data:
             return text
-        label = data.get("label") or "el horario acordado"
-        parts = [f"Listo, tu cita quedó confirmada para {label}."]
-        if data.get("meeting_url"):
-            parts.append(f"Enlace de la reunión: {data['meeting_url']}")
-        elif data.get("link_pending"):
-            parts.append("El enlace de la videollamada te llegará por aquí en un momento.")
-        if data.get("reminder_consent"):
-            parts.append("También quedaron activados los recordatorios que autorizaste.")
-        return "\n\n".join(parts)
+        return confirmar(text, data, getattr(self._profile, "treatment", "tu"))
 
     async def _reschedule_session(self, args: dict[str, Any]) -> dict[str, Any]:
         chosen, error = await self._resolve_offered(args, "reschedule_session")
@@ -1027,11 +1024,20 @@ class ToolRuntime:
             raise
         await self._ctx.store.clear_offered_slots(self._conv.id)
         self.booked = True
+        meeting_url, link_pending = _meeting(result)
+        # 071 (D17): la cita movida también pasa por el guardarraíl.
+        self.booking_confirmation = {
+            "tipo": "reschedule",
+            "label": chosen.label or result.get("label"),
+            "meeting_url": meeting_url,
+            "link_pending": link_pending,
+            "reminder_consent": False,
+        }
         return {
             "ok": True,
             "label": chosen.label or result.get("label"),
-            "meeting_url": _meeting(result)[0],
-            "enlace_pendiente": _meeting(result)[1],
+            "meeting_url": meeting_url,
+            "enlace_pendiente": link_pending,
             "instrucciones": (
                 "confirma que quedó movida, con el día COMPLETO y la hora tal "
                 "cual dice label; el link de la videollamada sigue siendo el "
