@@ -337,45 +337,53 @@ CLAVE_DE_HERRAMIENTA = {
 
 
 def solo_encendidas(schemas: list[dict[str, Any]], profile: Any) -> list[dict[str, Any]]:
-    """Las herramientas que el perfil deja encendidas (034)."""
+    """Las herramientas que el perfil deja encendidas (034).
+
+    071 (D20): efectivas = rol ∩ perfil del negocio ∩ capacidades del CRM.
+    Las capacidades ya filtraron `schemas` (`tool_schemas`); aquí, el rol
+    (`app/roles.py`) y lo que el dueño encendió.
+    """
+    from app.herramientas.builtin import REGISTRO
+    from app.roles import rol_de
+
     permite = getattr(profile, "permite", None)
     if not callable(permite):
         return schemas
-    return [
-        t
-        for t in schemas
-        if permite(CLAVE_DE_HERRAMIENTA.get(t.get("function", {}).get("name", ""), "escalar"))
-    ]
+    rol = rol_de(getattr(profile, "role", None))
+    out = []
+    for t in schemas:
+        clave = REGISTRO.clave_de(t.get("function", {}).get("name", ""))
+        if permite(clave) and rol.permite(clave):
+            out.append(t)
+    return out
 
 
-def tool_schemas(agenda_enabled: bool = True, agenda_v2: bool = False, coordination: bool = False) -> list[dict[str, Any]]:
+def tool_schemas(
+    agenda_enabled: bool = True,
+    agenda_v2: bool = False,
+    coordination: bool = False,
+    context: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     """El catálogo que se le ofrece al modelo en ESTE turno.
 
     Contra un CRM sin agenda no se le enseñan las herramientas de agendar: si
     se le enseñan, las llama, fallan todas y el lead recibe evasivas en vez de
     un handoff limpio. Que no exista la herramienta es más claro que pedirle al
     prompt que se acuerde de no usarla.
+
+    071 (D20): sale del registro de `ToolSpec` (`app/herramientas/`).
     """
-    if agenda_enabled:
-        if agenda_v2:
-            import copy
-            schemas = copy.deepcopy(TOOL_SCHEMAS)
-            for tool in schemas:
-                if tool["function"]["name"] == "book_session":
-                    params = tool["function"]["parameters"]
-                    params["properties"]["recordatorios_aceptados"] = dict(RECORDATORIOS_ACEPTADOS)
-                    params["required"].append("recordatorios_aceptados")
-                if tool["function"]["name"] == "reschedule_session":
-                    params = tool["function"]["parameters"]
-                    params["properties"]["selection_token"] = {"type": "string", "description": "Token de list_bookings de la cita elegida y confirmada por el cliente"}
-                    params["required"].append("selection_token")
-            return schemas + AGENDA_V2_SCHEMAS + ([{"type": "function", "function": {"name": "coordination_consent", "description": "Registra consentimiento EXPLÍCITO para un único recordatorio de coordinación tras 24 horas sin reservar. Nunca deduzcas consentimiento por pedir una cita. consent=false si rechaza seguimiento. Solo tras ofrecer horarios.", "parameters": {"type": "object", "properties": {"consent": {"type": "boolean"}}, "required": ["consent"]}}}] if coordination else [])
-        return TOOL_SCHEMAS
-    return [
-        t
-        for t in TOOL_SCHEMAS
-        if t.get("function", {}).get("name") not in AGENDA_TOOLS
-    ]
+    from app.herramientas.builtin import REGISTRO
+    from app.herramientas.registro import Capacidades
+
+    return REGISTRO.esquemas(
+        Capacidades(
+            agenda=agenda_enabled,
+            agenda_v2=agenda_v2,
+            coordinacion=coordination,
+            contexto=context,
+        )
+    )
 
 
 def _meeting(result: dict[str, Any]) -> tuple[str | None, bool]:
@@ -548,31 +556,19 @@ class ToolRuntime:
         self.etapa_movida: str | None = None
 
     async def execute(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
+        """Despacha por registro (071, D20), no por `if name == …`."""
+        from app.herramientas.builtin import REGISTRO
+        from app.herramientas.registro import Capacidades
+
+        caps = Capacidades(
+            agenda=True,
+            agenda_v2=bool(getattr(self._ctx.crm, "supports_agenda_v2", False)),
+            coordinacion=bool(getattr(self._ctx.crm, "supports_coordination", False)),
+        )
         try:
-            if name == "coordination_consent" and getattr(self._ctx.crm, "supports_coordination", False):
-                if not isinstance(args.get("consent"), bool):
-                    return {"ok": False, "error": "explicit_consent_required"}
-                return await self._ctx.crm.set_coordination_consent(self._crm_conv_id, args["consent"])
-            if name == "list_bookings" and getattr(self._ctx.crm, "supports_agenda_v2", False):
-                return {"ok": True, "bookings": await self._ctx.crm.list_bookings(self._crm_conv_id)}
-            if name == "cancel_session" and getattr(self._ctx.crm, "supports_agenda_v2", False):
-                if args.get("confirmation") is not True or not args.get("selection_token"):
-                    return {"ok": False, "error": "confirmation_required"}
-                return await self._ctx.crm.cancel_booking(self._crm_conv_id, str(args["selection_token"]), True)
-            if name == "update_ficha":
-                return await self._update_ficha(args)
-            if name == "move_stage":
-                return await self._move_stage(args)
-            if name == "propose_slots":
-                return await self._propose_slots(args)
-            if name == "book_session":
-                return await self._book_session(args)
-            if name == "reschedule_session":
-                return await self._reschedule_session(args)
-            if name == "route_out":
-                return await self._route_out()
-            if name == "handoff":
-                return self._handoff(args)
+            spec = REGISTRO.get(name)
+            if spec is not None and spec.ejecutable(caps):
+                return await spec.ejecutar(self, args)
             logger.warning("tools: herramienta desconocida %r", name)
             return {"ok": False, "error": f"herramienta desconocida: {name}"}
         except CrmError as exc:
