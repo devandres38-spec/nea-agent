@@ -37,10 +37,11 @@ class TestPorDefecto:
         assert s.llm_reasoning_effort == "minimal"
         assert s.llm_provider_sort == "throughput"
 
-    def test_no_hay_tope_de_salida(self) -> None:
-        # Un tope convirtio UNA llamada lenta en DOS: el modelo gastaba los
-        # tokens razonando, chocaba con la pared y habia que repetirla entera.
-        assert not hasattr(Settings(), "llm_max_tokens")
+    def test_el_tope_de_salida_es_alto(self) -> None:
+        # 2.13.1 — Vuelve un tope, pero ALTO: uno bajo convirtio UNA llamada
+        # lenta en DOS (el modelo gastaba los tokens razonando y chocaba con
+        # la pared). Bajarlo de ~1500 reabre ese problema.
+        assert Settings().llm_max_tokens >= 1500
 
 
 class TestLoQueViajaEnLaLlamada:
@@ -58,8 +59,8 @@ class TestLoQueViajaEnLaLlamada:
         enviado = json.loads(ruta.calls.last.request.content)
         assert enviado["reasoning"] == {"effort": "minimal"}
         assert enviado["provider"] == {"sort": "throughput"}
-        # El tope sigue sin existir: que no vuelva por la puerta de atras.
-        assert "max_tokens" not in enviado
+        # 2.13.1 — El tope viaja en el cuerpo de OpenAI, no en `extra_body`.
+        assert enviado["max_tokens"] == 2048
 
     @respx.mock
     async def test_vacios_no_se_mandan(self) -> None:

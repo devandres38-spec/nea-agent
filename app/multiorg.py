@@ -229,6 +229,7 @@ class RegistroDeOrganizaciones:
                 # Y el tope por intento, tambien de esta Nea: el CRM reenvia,
                 # pero quien espera al proveedor colgado es el turno de aqui.
                 timeout=por_defecto.llm_timeout_seconds,
+                max_tokens=por_defecto.llm_max_tokens,
             )
             self._llms[clave] = cliente
             while len(self._llms) > self.MAX_LLMS:
@@ -283,6 +284,7 @@ class RegistroDeOrganizaciones:
             reasoning_effort=por_defecto.llm_reasoning_effort,
             provider_sort=por_defecto.llm_provider_sort,
             timeout=por_defecto.llm_timeout_seconds,
+            max_tokens=por_defecto.llm_max_tokens,
         )
 
     async def aclose(self) -> None:

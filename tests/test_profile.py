@@ -87,7 +87,9 @@ async def test_provider_cae_al_brief_local_si_crm_404(tmp_path):
     prof = await provider.get()
     assert prof.agent_name == "Asistente"  # 071 (D13, R4): marca blanca
     assert prof.instructions and "barbería" in prof.instructions
-    assert prof.has_knowledge
+    # 2.13.1 — Instrucciones no son KB: el prompt avisa que falta conocimiento.
+    assert prof.has_instructions
+    assert not prof.has_knowledge
 
 
 async def test_provider_minimo_sin_crm_ni_brief():
