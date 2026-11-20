@@ -5,9 +5,9 @@ catálogo del CRM que la enciende o apaga (`profile.tools`), su esquema, cómo
 se ejecuta y cuándo existe. El turno no sabe de nombres: pide los esquemas
 que tocan y despacha por registro.
 
-La 072 enchufará aquí un proveedor de herramientas dinámicas (`tools[]` del
-contexto, ejecutadas por `POST /api/brains/tools/{name}`) sin tocar el turno,
-el prompt ni `/context`.
+vocero-crm 072-B (D15): las herramientas de módulo del CRM entran en un
+registro NUEVO por turno (`app/herramientas/dinamicas.py`); este, el de las
+nativas (`REGISTRO`), nunca se muta.
 """
 from __future__ import annotations
 
@@ -73,7 +73,13 @@ class Registro:
     def esquemas(self, caps: Capacidades) -> list[dict[str, Any]]:
         return [spec.esquema(caps) for spec in self if spec.ofrecer(caps)]
 
-    def clave_de(self, nombre: str) -> str:
-        """Clave del catálogo; una herramienta que no está aquí no se apaga."""
+    def clave_de(self, nombre: str) -> str | None:
+        """Clave del catálogo, o None si la herramienta no está en ESTE registro.
+
+        072-B: antes un nombre desconocido valía «escalar» —la clave que nunca
+        se apaga—, así que cualquier esquema con un nombre ajeno al registro
+        pasaba el filtro del perfil. Ahora lo desconocido no tiene clave y no
+        se ofrece ni se ejecuta.
+        """
         spec = self.get(nombre)
-        return spec.clave if spec else "escalar"
+        return spec.clave if spec else None

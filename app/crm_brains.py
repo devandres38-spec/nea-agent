@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import uuid
 from typing import Any
 
 import httpx
@@ -40,6 +41,17 @@ from app.crm import (
 )
 
 logger = logging.getLogger("nea.crm.brains")
+
+# vocero-crm 072-B — El CRM corta la herramienta a los 8 s (504); Nea espera
+# un poco más para recibir ese 504 en vez de cortar ella primero.
+TIMEOUT_HERRAMIENTA_S = 10.0
+
+
+def _json_o_none(resp: httpx.Response) -> Any:
+    try:
+        return resp.json()
+    except ValueError:
+        return None
 
 # Las rutas que solo cambian de sitio. Las que además cambian de forma tienen
 # su propio método más abajo.
@@ -176,6 +188,51 @@ class BrainsCrmClient(CrmClient):
         envelope = self._envelopes.get(conversation_id, {})
         key = hashlib.sha256(f"{conversation_id}:{self.despacho_de(conversation_id)}:{action}:{value}".encode()).hexdigest()
         return {"conversationId": conversation_id, "idempotencyKey": key, **envelope}
+
+    async def call_tool(self, conversation_id: str, name: str, args: dict[str, Any]) -> dict[str, Any]:
+        """vocero-crm 072-B (D15) — Ejecuta una herramienta de módulo en el CRM.
+
+        `POST /api/brains/tools/{name}` con el despacho en curso: es lo que le
+        deja al CRM no repetir una escritura si el turno se reintenta. Sin
+        despacho (el seguimiento), un id propio por llamada.
+
+        Lo que vuelve es lo que ve el modelo (contrato brains-072 §4):
+        200 → el cuerpo tal cual; 404 → `herramienta_no_disponible`; 409 →
+        `ai_paused`; 413/422 → `argumentos_invalidos` (+ detalle); 5xx, 504
+        o 10 s sin respuesta → `crm_error`. 401/403 → `CrmRechazo` (terminal,
+        lo lanza `_request`): no se le devuelve al modelo.
+        """
+        despacho = self.despacho_de(conversation_id) or f"nea-{uuid.uuid4().hex}"
+        try:
+            resp = await self._request(
+                "POST",
+                f"/api/brains/tools/{name}",
+                json={"conversationId": conversation_id, "dispatchId": despacho, "args": args},
+                timeout=TIMEOUT_HERRAMIENTA_S,
+            )
+        except CrmRechazo:
+            raise
+        except CrmError as exc:
+            logger.warning("herramienta %s: el CRM no contestó (%s)", name, exc)
+            return {"ok": False, "error": "crm_error", "detalle": "no se pudo completar; sigue sin ella o haz handoff"}
+        if resp.status_code == 200:
+            data = _json_o_none(resp)
+            if isinstance(data, dict):
+                return data
+            return {"ok": False, "error": "crm_error", "detalle": "respuesta ilegible"}
+        if resp.status_code == 404:
+            return {"ok": False, "error": "herramienta_no_disponible"}
+        if resp.status_code == 409:
+            return {"ok": False, "error": "ai_paused"}
+        if resp.status_code in (413, 422):
+            cuerpo = _json_o_none(resp)
+            error = cuerpo.get("error") if isinstance(cuerpo, dict) else None
+            detalle = None
+            if isinstance(error, dict):
+                detalle = error.get("details") or error.get("message")
+            return {"ok": False, "error": "argumentos_invalidos", "detalle": detalle or "revisa los argumentos"}
+        logger.warning("herramienta %s: el CRM respondió %s", name, resp.status_code)
+        return {"ok": False, "error": "crm_error", "detalle": "no se pudo completar; sigue sin ella o haz handoff"}
 
     def despacho_de(self, conversation_id: str) -> str:
         """El despacho en curso de esa conversación, o cadena vacía."""
