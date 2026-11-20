@@ -402,7 +402,7 @@ def _lo_presencial(texto: str, datos: dict[str, Any]) -> list[str]:
         return []
     extra: list[str] = []
     for url in _URL.findall(texto or ""):
-        if _MAPS.search(url) and url not in extra:
+        if _MAPS.search(url) and f"📍 {url}" not in extra:
             extra.append(f"📍 {url}")
     for linea in (texto or "").splitlines():
         limpia = linea.strip()

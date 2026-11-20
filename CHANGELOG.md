@@ -6,6 +6,20 @@ Qué cambia en cada versión de Nea y qué hacer al actualizar. Cada tag
 
 ## Sin publicar
 
+### Parche final de la auditoría 073-C
+
+- **El validador ya no confunde preguntas con promesas.** «¿Quieres que te
+  agende el lunes?» (subjuntivo) se leía como «te agendé» al quitar tildes y
+  pedía una corrección: el pretérito ahora exige la tilde y las frases que son
+  pregunta no cuentan. «¿Te paso con un asesor?» y «si quieres, te paso con un
+  asesor» ya no registran handoff; «un asesor te va a escribir/atender» sí.
+- **Una respuesta partida no pierde trozos.** Si un trozo cae a `pending_send`
+  por un fallo transitorio, los que siguen se encolan detrás, en orden; un 409
+  del CRM (pausa, ventana) sigue cortando sin encolar.
+- **Una foto no se descarta por respuesta obsoleta**: la imagen no se vuelve a
+  ver en el turno siguiente.
+- La confirmación presencial ya no repite el mismo enlace de Maps.
+
 ### Calidad conversacional, comprobantes y Colombia (vocero-crm 073-C)
 
 - **Comprobantes de pago** (Nequi, Daviplata, Bancolombia, transferencias):

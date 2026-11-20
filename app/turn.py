@@ -646,6 +646,9 @@ async def run_turn(
         and runtime.ejecutadas == 0
         and runtime.handoff_reason is None
         and not cerrar_sin_rumbo
+        # Una foto que el modelo miró no se vuelve a ver en el turno que
+        # sigue (el historial la guarda en pasado): descartar aquí la perdía.
+        and not image_uris
         and await hay_despacho_mas_nuevo()
     ):
         logger.info("turno %s: ya llegó un despacho más nuevo — descarto esta respuesta", identity)
@@ -655,8 +658,18 @@ async def run_turn(
         # 2000, Instagram 1000); por párrafos, nunca a media URL.
         enviadas: list[str] = []
         try:
-            for parte in partir(final_text, canal):
-                if not await _send(ctx, conv.id, str(crm_conv_id), parte):
+            partes = partir(final_text, canal)
+            for i, parte in enumerate(partes):
+                estado = await _enviar(ctx, conv.id, str(crm_conv_id), parte)
+                if estado == BLOQUEADO:
+                    # 409 (pausa, ventana): lo que falta tampoco procede.
+                    break
+                if estado == ENCOLADO:
+                    # Fallo transitorio: este trozo quedó en pending_send. Los
+                    # que siguen van detrás, en orden (la cola sale por id);
+                    # cortar aquí los perdía y el lead recibía media respuesta.
+                    for resto in partes[i + 1:]:
+                        await _encolar(ctx, conv.id, str(crm_conv_id), resto)
                     break
                 enviadas.append(parte)
         except EnvioImposible as exc:
@@ -1045,10 +1058,24 @@ class EnvioImposible(Exception):
 
 
 async def _send(ctx: AppContext, conv_id: int, crm_conv_id: str, text: str) -> bool:
+    """Envía vía el CRM; True solo si salió ya (ver `_enviar`)."""
+    return await _enviar(ctx, conv_id, crm_conv_id, text) == ENVIADO
+
+
+ENVIADO = "enviado"
+BLOQUEADO = "bloqueado"
+ENCOLADO = "encolado"
+
+
+async def _enviar(ctx: AppContext, conv_id: int, crm_conv_id: str, text: str) -> str:
     """Envía vía el CRM. Si el turno agota sus reintentos, la respuesta NO se
     descarta: se encola en pending_send y el SenderWorker la reintenta con
     backoff hasta entregar o caducar (incidente 2026-08-03; 15 min desde la
     073-A).
+
+    Devuelve `ENVIADO`, `BLOQUEADO` (409 del CRM: no procede, silencio) o
+    `ENCOLADO` (fallo transitorio: quedó en pending_send). 073-C (parche
+    final): quien parte la respuesta necesita distinguir los dos últimos.
 
     073-A (D3): un rechazo definitivo (`envio_terminal`) lanza
     `EnvioImposible`: reintentarlo o encolarlo solo retrasaba el handoff.
@@ -1057,11 +1084,11 @@ async def _send(ctx: AppContext, conv_id: int, crm_conv_id: str, text: str) -> b
     for attempt in range(SEND_ATTEMPTS):
         try:
             await ctx.crm.send_message(crm_conv_id, text)
-            return True
+            return ENVIADO
         except CrmConflict as exc:
             # ai_paused / window_closed: silencio respetuoso, sin reintento.
             logger.info("envío bloqueado por el CRM (%s) — silencio", exc.code)
-            return False
+            return BLOQUEADO
         except CrmRechazo:
             # A-2: la credencial ya no vale (negocio suspendido, rotado…). Ni
             # reintento ni pending_send: con ella no va a salir nunca.
@@ -1072,6 +1099,11 @@ async def _send(ctx: AppContext, conv_id: int, crm_conv_id: str, text: str) -> b
             logger.warning("envío falló (intento %d): %s", attempt + 1, exc)
             if attempt < SEND_ATTEMPTS - 1:
                 await asyncio.sleep(2.0**attempt)
+    await _encolar(ctx, conv_id, crm_conv_id, text)
+    return ENCOLADO
+
+
+async def _encolar(ctx: AppContext, conv_id: int, crm_conv_id: str, text: str) -> None:
     # La organización viaja con el encolado: cuando el SenderWorker despierte
     # —quizá horas después— tiene que hablarle al CRM con la credencial de
     # ESTA, y para entonces el turno ya no existe.
@@ -1088,7 +1120,6 @@ async def _send(ctx: AppContext, conv_id: int, crm_conv_id: str, text: str) -> b
         "envío agotó reintentos del turno — encolado como pending_send %d",
         pending_id,
     )
-    return False
 
 
 async def _safe_handoff(

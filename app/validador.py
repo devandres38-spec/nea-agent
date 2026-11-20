@@ -16,6 +16,8 @@ Determinista, después del turno y antes de enviar:
    - «te paso con un asesor» sin `handoff` → se CUMPLE: el turno registra el
      handoff (`modelo`). Retractar la promesa dejaría al lead esperando a
      alguien que nadie va a mandar; cumplirla solo cuesta una alerta.
+   Ninguna de las dos cuenta en una pregunta («¿quieres que te agende…?»,
+   «¿te paso con un asesor?») ni en una oferta condicional («si quieres…»).
 
 La corrección es la de siempre: UNA vuelta más, SIN herramientas.
 """
@@ -53,22 +55,49 @@ def _plano(texto: str) -> str:
     return "".join(c for c in sin if not unicodedata.combining(c))
 
 
+# Parche final 073-C: con las tildes quitadas, «¿quieres que te agende…?»
+# (subjuntivo) se leía como «te agendé» (pretérito). La cita se busca en el
+# texto CON tildes, el pretérito las exige, y las preguntas no cuentan.
 _PROMETE_CITA = re.compile(
     r"\b(?:"
-    r"(?:tu|su|la) cita (?:ya )?(?:quedo|esta|queda) (?:agendada|confirmada|reservada|separada|programada)"
-    r"|(?:ya )?(?:te|le) (?:agende|reserve|separe|programe|aparte)\b"
-    r"|(?:ya )?quedo (?:agendad|reservad|confirmad|separad)[oa]"
-    r"|(?:ya )?(?:estas|esta) agendad[oa]"
+    r"(?:tu|su|la) cita (?:ya )?(?:qued[óo]|est[áa]|queda) (?:agendada|confirmada|reservada|separada|programada)"
+    r"|(?:ya )?(?:te|le) (?:agendé|reservé|separé|programé|aparté)(?!\w)"
+    r"|(?:ya )?qued[óo] (?:agendad|reservad|confirmad|separad)[oa]"
+    r"|(?:ya )?(?:estás|está|estas|esta) agendad[oa]"
     r")"
 )
 _PROMETE_HANDOFF = re.compile(
     r"\b(?:"
     r"(?:te|le|lo|la) (?:paso|comunico|transfiero|conecto|remito) con"
-    r"|(?:un|una) (?:asesor|asesora|persona|agente humano|ejecutivo|ejecutiva) (?:te|le) (?:va a )?(?:contacta|escribe|llama|atiende|contactara|escribira|llamara|atendera)"
-    r"|(?:el|nuestro) equipo (?:te|le) (?:va a )?(?:contacta|escribe|llama|contactara|escribira|llamara)"
+    r"|(?:un|una) (?:asesor|asesora|persona|agente humano|ejecutivo|ejecutiva) (?:te|le) (?:va a )?"
+    r"(?:contacta|escribe|llama|atiende|contactara|escribira|llamara|atendera|escribir|atender)"
+    r"|(?:el|nuestro) equipo (?:te|le) (?:va a )?"
+    r"(?:contacta|escribe|llama|atiende|contactara|escribira|llamara|atendera|escribir|atender)"
     r"|ya (?:le )?avise al equipo"
     r")"
 )
+# Una oferta no es una promesa: «si quieres, te paso con un asesor».
+_CONDICIONAL = re.compile(
+    r"\bsi (?:quieres|quiere|prefieres|prefiere|necesitas|necesita|deseas|desea"
+    r"|gustas|gusta|lo prefieres|lo necesitas|te parece|le parece)\b"
+)
+_FRASES = re.compile(r"(?<=[.!?…])\s+|\n+")
+
+
+def _frases(texto: str) -> list[str]:
+    return [f for f in _FRASES.split(texto) if f.strip()]
+
+
+def _es_pregunta(frase: str) -> bool:
+    return "¿" in frase or frase.rstrip().endswith("?")
+
+
+def _promete_cita(texto: str) -> bool:
+    return any(
+        _PROMETE_CITA.search(unicodedata.normalize("NFC", f.lower()))
+        for f in _frases(texto)
+        if not _es_pregunta(f)
+    )
 
 
 def limpiar_pensamiento(texto: str | None) -> str | None:
@@ -83,7 +112,17 @@ def limpiar_pensamiento(texto: str | None) -> str | None:
 
 
 def promete_handoff(texto: str) -> bool:
-    return bool(_PROMETE_HANDOFF.search(_plano(texto)))
+    """Una promesa afirmativa de pasarlo a una persona. Las preguntas («¿te
+    paso con un asesor?») y las ofertas condicionales no cuentan."""
+    for frase in _frases(texto):
+        if _es_pregunta(frase):
+            continue
+        plana = _plano(frase)
+        if _CONDICIONAL.search(plana):
+            continue
+        if _PROMETE_HANDOFF.search(plana):
+            return True
+    return False
 
 
 def revisar(texto: str | None, *, reservo: bool) -> str | None:
@@ -94,7 +133,7 @@ def revisar(texto: str | None, *, reservo: bool) -> str | None:
         return "nombraba una herramienta o una llamada interna; el lead no puede ver eso"
     if _NOTA_PARCIAL.search(texto):
         return "traía una nota interna entre paréntesis o corchetes"
-    if not reservo and _PROMETE_CITA.search(_plano(texto)):
+    if not reservo and _promete_cita(texto):
         return (
             "daba la cita por agendada sin haberla reservado; no la confirmes "
             "hasta que la reserva haya salido bien"
