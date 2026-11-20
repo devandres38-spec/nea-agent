@@ -25,6 +25,7 @@ from typing import Any
 
 import httpx
 
+from app.datos import dato_no_confiable
 from app.crm import (
     CrmClient,
     CrmConflict,
@@ -568,6 +569,11 @@ def _perfil_desde_contexto(data: dict[str, Any]) -> dict[str, Any]:
 
     El conocimiento llega como pares pregunta/respuesta y se aplana a texto:
     es lo que ya sabe consumir el prompt, y hacerlo aquí evita tocarlo.
+
+    vocero-crm 074 (D8, contrato brains-074): el CRM ya manda solo lo activo
+    y en orden; una entrada con `title` va con `## título` encima (igual que
+    el `kb` de `/api/bot/profile`). Y `resources` (enlaces oficiales) viaja
+    en el contexto: se pasa tal cual y `profile_from_payload` lo sanea.
     """
     agent = data.get("agent") or {}
     knowledge = data.get("knowledge") or []
@@ -575,18 +581,30 @@ def _perfil_desde_contexto(data: dict[str, Any]) -> dict[str, Any]:
     for k in knowledge:
         if not isinstance(k, dict):
             continue
+        cuerpo = None
         if k.get("kind") == "block" and isinstance(k.get("content"), str):
-            bloques.append(k["content"])
+            cuerpo = k["content"]
         elif k.get("kind", "qa") == "qa" and k.get("question") and k.get("answer"):
-            bloques.append(f"P: {k['question']}\nR: {k['answer']}")
+            cuerpo = f"P: {k['question']}\nR: {k['answer']}"
+        if not cuerpo:
+            continue
+        titulo = titulo_de_entrada(k.get("title"))
+        bloques.append(f"## {titulo}\n{cuerpo}" if titulo else cuerpo)
+    recursos = data.get("resources")
     return {
         "profile": {**agent, "cloud": True},
         "kb": "\n\n".join(bloques) if bloques else None,
-        # Esta superficie todavía no expone los recursos del negocio (enlaces
-        # que el agente puede compartir). Lista vacía en vez de omitirla: el
-        # consumidor ya la trata como opcional.
-        "resources": [],
+        "resources": recursos if isinstance(recursos, list) else [],
     }
+
+
+def titulo_de_entrada(valor: Any) -> str | None:
+    """vocero-crm 074 — El título de una entrada, en una línea y sin `#` propios
+    (espejo de `tituloLimpio` de `src/lib/kb.ts`)."""
+    if not isinstance(valor, str):
+        return None
+    t = " ".join(valor.split()).lstrip("#").strip()
+    return dato_no_confiable(t, 120) or None
 
 
 def _aplanar_reserva(payload: dict[str, Any]) -> dict[str, Any]:

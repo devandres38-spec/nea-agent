@@ -271,6 +271,14 @@ class Store(Protocol):
     async def reschedule_pending_send(
         self, pending_id: int, attempts: int, next_retry_at: datetime
     ) -> None: ...
+    # vocero-crm 074 (auditoría) — Los trozos `message` pendientes POSTERIORES
+    # (id > after_id) de la misma (organización, conversación del CRM).
+    async def empujar_pendientes_posteriores(
+        self, organization_id: str, crm_conversation_id: str, after_id: int, no_antes_de: datetime
+    ) -> int: ...
+    async def abandonar_pendientes_posteriores(
+        self, organization_id: str, crm_conversation_id: str, after_id: int
+    ) -> list[int]: ...
 
     # seguimiento
     async def due_followups(self, now: datetime) -> list[Conversation]: ...
@@ -476,6 +484,34 @@ class MemoryStore(MemoryDispatchStore):
         item = self.pending_sends[pending_id]
         item.attempts = attempts
         item.next_retry_at = next_retry_at
+
+    def _posteriores(self, organization_id: str, crm_conversation_id: str, after_id: int) -> list[PendingSend]:
+        return [
+            p for p in sorted(self.pending_sends.values(), key=lambda p: p.id)
+            if p.id > after_id
+            and p.kind == KIND_MESSAGE
+            and p.organization_id == organization_id
+            and p.crm_conversation_id == crm_conversation_id
+            and p.delivered_at is None
+            and p.abandoned_at is None
+        ]
+
+    async def empujar_pendientes_posteriores(
+        self, organization_id: str, crm_conversation_id: str, after_id: int, no_antes_de: datetime
+    ) -> int:
+        filas = self._posteriores(organization_id, crm_conversation_id, after_id)
+        for p in filas:
+            p.next_retry_at = max(p.next_retry_at, no_antes_de)
+        return len(filas)
+
+    async def abandonar_pendientes_posteriores(
+        self, organization_id: str, crm_conversation_id: str, after_id: int
+    ) -> list[int]:
+        filas = self._posteriores(organization_id, crm_conversation_id, after_id)
+        ahora = utcnow()
+        for p in filas:
+            p.abandoned_at = ahora
+        return [p.id for p in filas]
 
     async def due_followups(self, now: datetime) -> list[Conversation]:
         return [

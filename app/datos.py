@@ -74,3 +74,43 @@ def dato_no_confiable(valor: Any, maximo: int = 120) -> str:
 def entre_comillas(valor: Any, maximo: int = 120) -> str:
     """`«dato»` — el marco que el modelo ve alrededor de lo que no es nuestro."""
     return f"«{dato_no_confiable(valor, maximo)}»"
+
+
+# vocero-crm 074 (D8) — Los enlaces oficiales del negocio (`resources`).
+MAX_RECURSOS = 10
+_URL_RECURSO = re.compile(r"^https://[^\s\"'<>`\[\]{}\\|^]+$")
+
+
+def _url_de_recurso(valor: Any) -> str | None:
+    if not isinstance(valor, str):
+        return None
+    url = valor.strip()
+    if len(url) > 500 or not _URL_RECURSO.match(url):
+        return None
+    host = url[len("https://"):].split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
+    if "@" in host or "." not in host:
+        return None
+    return url
+
+
+def recursos_saneados(crudos: Any) -> list[dict[str, str]]:
+    """Los enlaces verificados, listos para el prompt: hasta 10, solo
+    `https://` sin espacios, comillas, ángulos ni corchetes (no pueden cerrar
+    el marco ni abrir un marcador), con la etiqueta en una línea. Lo que no
+    cumple se descarta: un enlace dudoso no se comparte."""
+    if not isinstance(crudos, list):
+        return []
+    out: list[dict[str, str]] = []
+    vistos: set[str] = set()
+    for r in crudos:
+        if not isinstance(r, dict):
+            continue
+        url = _url_de_recurso(r.get("url"))
+        if url is None or url.lower() in vistos:
+            continue
+        etiqueta = dato_no_confiable(r.get("label") or url, 60) or url
+        vistos.add(url.lower())
+        out.append({"label": etiqueta, "url": url})
+        if len(out) >= MAX_RECURSOS:
+            break
+    return out

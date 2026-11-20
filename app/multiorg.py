@@ -233,6 +233,8 @@ class RegistroDeOrganizaciones:
                 timeout=por_defecto.llm_timeout_seconds,
                 max_tokens=por_defecto.llm_max_tokens,
                 temperature=temperatura,
+                # vocero-crm 074 (E8): el CRM anota el uso por despacho.
+                cabecera_despacho=True,
             )
             self._llms[clave] = cliente
             while len(self._llms) > self.MAX_LLMS:

@@ -54,6 +54,16 @@ def contexto_de_log(
             var.reset(token)
 
 
+_DESPACHO_VALIDO = re.compile(r"^[\w-]{1,64}$")
+
+
+def despacho_actual() -> str | None:
+    """vocero-crm 074 (E8) — El `dispatchId` del turno en curso, si tiene forma
+    de id (va en la cabecera `X-Vocero-Dispatch` hacia el proxy del CRM)."""
+    valor = _dispatch.get()
+    return valor if valor and _DESPACHO_VALIDO.match(valor) else None
+
+
 def contexto_actual() -> dict[str, str]:
     return {
         clave: valor
