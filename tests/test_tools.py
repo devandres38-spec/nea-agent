@@ -41,7 +41,7 @@ async def test_book_rechaza_slot_no_ofrecido(runtime_y_ctx, respx_mock):
         return_value=httpx.Response(200, json={"bookingId": "bk_1", "label": "x"})
     )
     result = await runtime.execute(
-        "book_session", {"start_utc": "2026-07-20T17:00:00Z"}  # nunca ofrecido
+        "book_session", {"start_utc": "2026-07-20T17:00:00Z", "dia_confirmado": "sí, el lunes"}  # nunca ofrecido
     )
     assert result["ok"] is False
     assert result["error"] == "slot_no_ofrecido"
@@ -68,7 +68,7 @@ async def test_book_acepta_slot_ofrecido_epoch_exacto(runtime_y_ctx, respx_mock)
     )
     # mismo instante escrito con offset en vez de Z — el epoch es lo que cuenta
     result = await runtime.execute(
-        "book_session", {"start_utc": "2026-07-20T16:00:00+00:00"}
+        "book_session", {"start_utc": "2026-07-20T16:00:00+00:00", "dia_confirmado": "sí, el lunes"}
     )
     assert result["ok"] is True
     assert runtime.booked is True
@@ -152,7 +152,7 @@ async def test_book_slot_taken_ofrece_alternativas_frescas(runtime_y_ctx, respx_
             },
         )
     )
-    result = await runtime.execute("book_session", {"start_utc": SLOT_ISO})
+    result = await runtime.execute("book_session", {"start_utc": SLOT_ISO, "dia_confirmado": "sí, el lunes"})
     assert result["ok"] is False
     assert result["error"] == "slot_taken"
     assert [s["label"] for s in result["slots"]] == [s["label"] for s in frescos]

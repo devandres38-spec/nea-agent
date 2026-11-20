@@ -17,6 +17,7 @@ from typing import Any
 
 from app.crm import CrmRechazo
 from app.efectos import registrar_efectos
+from app.obsoleta import registrar_chequeo
 from app.multiorg import organizacion_del_despacho
 from app.observabilidad import contexto_de_log
 
@@ -170,8 +171,14 @@ async def _atender(ctx: Any, job: Any) -> bool:
     async def sin_marcador() -> None:
         return None
 
-    # La tarea hereda el contexto: lo que el turno marque, cae en ESTA fila.
-    with registrar_efectos(marcador or sin_marcador):
+    async def sin_chequeo() -> bool:
+        return False
+
+    # La tarea hereda el contexto: lo que el turno marque, cae en ESTA fila;
+    # y (073-C) puede preguntar si ya llegó un despacho más nuevo.
+    with registrar_efectos(marcador or sin_marcador), registrar_chequeo(
+        getattr(job, "has_newer", None) or sin_chequeo
+    ):
         task = asyncio.create_task(execute())
     try:
         async with asyncio.timeout(240):

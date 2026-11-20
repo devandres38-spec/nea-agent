@@ -6,6 +6,42 @@ Qué cambia en cada versión de Nea y qué hacer al actualizar. Cada tag
 
 ## Sin publicar
 
+### Calidad conversacional, comprobantes y Colombia (vocero-crm 073-C)
+
+- **Comprobantes de pago** (Nequi, Daviplata, Bancolombia, transferencias):
+  nunca se dan por verificados. Si el turno trae una captura o el lead dice
+  que ya pagó, termina en handoff con la nota «Posible comprobante de pago —
+  validar en banco antes de confirmar».
+- **Imágenes**: como mucho 3 por turno, y en el historial la imagen queda en
+  pasado («ya no la tienes a la vista») para que el modelo no invente lo que
+  mostraba en turnos siguientes.
+- **Validador post-turno**: limpia `<think>…</think>` (GLM-5.3-Flash), pide otra
+  respuesta (sin herramientas) si nombra herramientas, deja notas internas o
+  da una cita por agendada sin reservarla; si promete un asesor sin `handoff`,
+  el handoff se registra.
+- **Respuesta obsoleta**: si mientras pensaba llegó otro despacho de la misma
+  conversación y el turno no tuvo efectos, la respuesta se descarta y el
+  siguiente turno contesta una sola vez.
+- **Respuestas largas** se parten por párrafos según el canal (WhatsApp 4096,
+  Messenger 2000, Instagram/TikTok 1000).
+- **Despacho**: lee `replyTo` (el mensaje citado) y los teléfonos de las
+  tarjetas de contacto; las reacciones no abren turno; un adjunto de Zernio
+  con texto ya no salta el procesamiento del adjunto; sin modelo que oiga no
+  se piden notas de voz.
+- **Memoria**: ventana de 20 mensajes (`HISTORY_WINDOW`, antes 10) con
+  presupuesto de caracteres y separador «— N días después —» cuando hay más
+  de 6 h entre mensajes.
+- **Cierre sin rumbo**: sin agenda no corta por cantidad de mensajes; los
+  stickers cuentan como relleno; relleno colombiano (listo, dale, hágale…).
+- **Colombia**: léxico de hostilidad colombiano (sin contar *parce* ni *qué
+  chimba*, ni las preguntas legítimas sobre estafas); chasis sin mexicanismos;
+  hora del negocio en 12 h; `dia_confirmado` tiene que citar lo que dijo el
+  lead; la confirmación conserva el profesional, el enlace de Maps y la
+  dirección, y entiende «a la 1», «separar», «festivo», «puente» y «de hoy
+  en ocho».
+- Dorados: los B0 siguen sin regenerarse; `DELTAS_073` suma el bloque del
+  chasis y la hora en 12 h.
+
 ### Humano↔Bot y seguridad (vocero-crm 073-B)
 
 - **Lo que pasó con una persona**: si el contexto trae `humanGap`, Nea lo lee

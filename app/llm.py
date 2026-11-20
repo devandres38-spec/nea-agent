@@ -316,6 +316,11 @@ class OpenAiLlm:
         # reportados por el proveedor, acumulados por instancia.
         self.usage = {"prompt": 0, "cached": 0, "completion": 0, "llamadas": 0}
 
+    @property
+    def puede_transcribir(self) -> bool:
+        """073-C (D5): hay modelo que oye; sin él, no se le piden audios al lead."""
+        return bool(self._transcribe_model)
+
     async def transcribe(
         self, data: bytes, mime: str, filename: str = "audio.ogg"
     ) -> str:
@@ -686,6 +691,11 @@ class LlmPorElCrm:
         tools: list[dict[str, Any]] | None = None,
     ) -> LlmReply:
         return await (await self.cliente()).complete(messages, tools)
+
+    @property
+    def puede_transcribir(self) -> bool:
+        """073-C (D5): hay modelo que oye; sin él, no se le piden audios al lead."""
+        return bool(self._transcribe_model)
 
     async def transcribe(
         self, data: bytes, mime: str, filename: str = "audio.ogg"

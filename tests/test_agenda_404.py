@@ -139,7 +139,7 @@ async def test_reservar_en_una_conversacion_que_no_existe_no_apaga_la_agenda(
     respx_mock.post(f"{CRM_URL}/api/bot/bookings").mock(
         return_value=httpx.Response(404, json={**SOBRE_404, "slots": []})
     )
-    result = await runtime.execute("book_session", {"start_utc": SLOT_ISO})
+    result = await runtime.execute("book_session", {"start_utc": SLOT_ISO, "dia_confirmado": "sí, el lunes"})
     assert result["error"] == "crm_error"
     assert ctx.agenda_enabled is True
 
@@ -147,7 +147,7 @@ async def test_reservar_en_una_conversacion_que_no_existe_no_apaga_la_agenda(
 async def test_el_404_vacio_sigue_siendo_agenda_apagada(runtime_y_ctx, respx_mock):
     runtime, ctx = runtime_y_ctx
     respx_mock.post(f"{CRM_URL}/api/bot/bookings").mock(return_value=httpx.Response(404))
-    result = await runtime.execute("book_session", {"start_utc": SLOT_ISO})
+    result = await runtime.execute("book_session", {"start_utc": SLOT_ISO, "dia_confirmado": "sí, el lunes"})
     assert result["error"] == "sin_agenda"
     assert ctx.agenda_enabled is False
 

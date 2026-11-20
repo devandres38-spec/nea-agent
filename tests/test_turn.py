@@ -93,18 +93,22 @@ async def test_los_turnos_de_una_conversacion_no_se_encinan(ctx, client, respx_m
     await despachar(client, ctx, text="De mañana", wamid="wamid.b")
     await asyncio.sleep(1.2)
 
-    assert routes["messages"].call_count == 2  # una respuesta por turno...
+    # 073-C (D5): A no tuvo efectos y B ya estaba en cola → la respuesta de A
+    # se descarta por obsoleta. UNA sola respuesta, la de B, que leyó los dos
+    # mensajes (están en el historial).
+    assert routes["messages"].call_count == 1
     rutas = [
         str(c.request.url.path)
         for c in respx_mock.calls
         if str(c.request.url.path) in ("/api/bot/context", "/api/bot/messages")
     ]
-    # ...y el turno B lee el contexto DESPUÉS de que A mandó la suya: si no,
-    # decide sobre un estado que ya cambió.
+    # Los turnos siguen sin encimarse: B lee el contexto DESPUÉS de que A
+    # terminó, y la única respuesta sale al final.
     assert rutas.count("/api/bot/context") == 2
-    assert rutas.index("/api/bot/messages") < rutas.index(
-        "/api/bot/context", rutas.index("/api/bot/context") + 1
-    )
+    assert rutas[-1] == "/api/bot/messages"
+    ultimo = ctx.llm.calls[-1]["messages"]
+    del_lead = " ".join(str(m["content"]) for m in ultimo if m["role"] == "user")
+    assert "Si 10.30" in del_lead and "De mañana" in del_lead
 
 
 async def test_el_texto_junto_a_una_herramienta_no_se_da_por_dicho(ctx, client, respx_mock):

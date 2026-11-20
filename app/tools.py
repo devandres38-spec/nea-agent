@@ -14,6 +14,8 @@ nunca tumba el turno.
 from __future__ import annotations
 
 import logging
+import re
+import unicodedata
 from datetime import date, datetime, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -84,9 +86,9 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
             "name": "propose_slots",
             "description": (
                 "Consulta la disponibilidad real de la agenda del negocio. Sin "
-                "fecha te regresa un REPARTO: unas horas de cada uno de los "
+                "fecha te devuelve un REPARTO: unas horas de cada uno de los "
                 "próximos días, con su día en palabras (hoy/mañana/nombre del "
-                "día). Con fecha te regresa TODAS las horas libres de ese día, "
+                "día). Con fecha te devuelve TODAS las horas libres de ese día, "
                 "o por qué no hay (cerrado, lleno, aún sin agenda). Si el lead "
                 "pide un día u hora que no viene en el reparto, consúltalo con "
                 "fecha antes de contestar. SOLO los horarios de la última "
@@ -506,7 +508,7 @@ def _cobertura(query: dict[str, Any] | None) -> dict[str, Any]:
     """
     base = (
         "Ofrécele máximo 3, con su etiqueta tal cual (día incluido), los que "
-        "embonen con lo que pidió. Esta lista es un REPARTO, no toda la agenda: "
+        "encajen con lo que pidió. Esta lista es un REPARTO, no toda la agenda: "
         "si pide un día u hora que no ves aquí, llama propose_slots con "
         "fecha=AAAA-MM-DD ANTES de contestarle. Nunca digas que un día u hora "
         "no tiene agenda sin haber consultado ese día."
@@ -563,6 +565,47 @@ def _zona_del_negocio(ctx: AppContext) -> ZoneInfo:
         return ZoneInfo(ZONA_POR_DEFECTO)
 
 
+def _plano_conf(texto: str) -> str:
+    sin = unicodedata.normalize("NFKD", (texto or "").lower())
+    sin = "".join(c for c in sin if not unicodedata.combining(c))
+    return " ".join(re.sub(r"[^\w:/ ]+", " ", sin).split())
+
+
+def dia_confirmado_valido(valor: Any, reciente: str | None) -> bool:
+    """073-C (D7): ¿`dia_confirmado` cita algo que de verdad se dijo?
+
+    Sin conversación reciente a mano (pruebas, ensayo viejo) no se puede
+    comprobar y vale lo de antes: basta con que no venga vacío.
+    """
+    cita = _plano_conf(str(valor or ""))
+    if not cita:
+        return False
+    if reciente is None:
+        return True
+    return cita in _plano_conf(reciente)
+
+
+def etiqueta_con_profesional(label: str | None, result: dict[str, Any]) -> str | None:
+    """073-C (D7): la etiqueta de la cita sin perder con QUIÉN es.
+
+    La etiqueta ofrecida puede venir sin el profesional y la del CRM con él;
+    o el CRM lo manda aparte. La confirmación (y su plantilla) lo conserva.
+    """
+    del_crm = str(result.get("label") or "")
+    if not label:
+        return del_crm or None
+    if " con " in label:
+        return label
+    if " con " in del_crm:
+        return del_crm
+    profesional = result.get("professional") or result.get("agendaName")
+    if isinstance(profesional, dict):
+        profesional = profesional.get("name")
+    if isinstance(profesional, str) and profesional.strip():
+        return f"{label} con {profesional.strip()}"
+    return label
+
+
 def _slots_for_llm(slots: list[OfferedSlot]) -> list[dict[str, str]]:
     return [{"start_utc": _iso_z(s.start_utc), "label": s.label} for s in slots]
 
@@ -612,6 +655,9 @@ class ToolRuntime:
         self.handoff_summary: str | None = None
         # 073-B (D6): el lead pidió la baja (Ley 1581) — el turno no escribe.
         self.baja = False
+        # 073-C (D5): herramientas que corrieron en este turno (una respuesta
+        # obsoleta solo se descarta si no hubo ninguna).
+        self.ejecutadas = 0
         self.booked = False
         self.booking_confirmation: dict[str, Any] | None = None
         self.routed_out = False
@@ -619,6 +665,10 @@ class ToolRuntime:
         self.etapa_movida: str | None = None
 
     async def execute(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
+        self.ejecutadas += 1
+        return await self._ejecutar(name, args)
+
+    async def _ejecutar(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
         """Despacha por registro (071, D20), no por `if name == …`.
 
         072-B: por el registro del turno. Un `CrmRechazo` (401/403: la
@@ -833,7 +883,7 @@ class ToolRuntime:
             "fecha": fecha,
             "estado": status,
             "detalle": (
-                f"{motivo}. Díselo derecho y ofrécele otro día — NUNCA acomodes "
+                f"{motivo}. Díselo con claridad y ofrécele otro día — NUNCA acomodes "
                 "su petición en otro día como si fuera lo mismo."
             ),
         }
@@ -942,6 +992,18 @@ class ToolRuntime:
                 "detalle": "solo puedes agendar un horario que ya ofreciste",
                 "slots_ofrecidos": _slots_for_llm(offered),
             }
+        # 073-C (D7): `dia_confirmado` es una CITA de lo que dijo el lead (o lo
+        # último que se le propuso). Vacío o inventado = todavía no confirmó.
+        if not dia_confirmado_valido(args.get("dia_confirmado"), self._conversacion_reciente):
+            logger.warning("tools: %s sin confirmación citada (%r)", accion, args.get("dia_confirmado"))
+            return None, {
+                "ok": False,
+                "error": "dia_sin_confirmar",
+                "detalle": (
+                    "en dia_confirmado va, tal cual, lo que el lead escribió para "
+                    "aceptar ese día; si todavía no lo aceptó, pregúntale antes de reservar"
+                ),
+            }
         # Deja rastro de sobre qué frase del lead se tomó la decisión: cuando
         # una cita sale mal, esto dice si hubo confirmación o se asumió.
         logger.info(
@@ -1048,7 +1110,7 @@ class ToolRuntime:
         self.booking_confirmation = {
             "tipo": "book",
             **self._instante_de(chosen),
-            "label": chosen.label or result.get("label"),
+            "label": etiqueta_con_profesional(chosen.label, result),
             "meeting_url": meeting_url,
             "link_pending": link_pending,
             "reminder_consent": bool(result.get("reminderConsent", False)),
@@ -1063,7 +1125,7 @@ class ToolRuntime:
             "ok": True,
             # La etiqueta del slot ofrecido trae el día en palabras; la del
             # CRM es la corta. Se repite ESTA para que el lead lea el día.
-            "label": chosen.label or result.get("label"),
+            "label": etiqueta_con_profesional(chosen.label, result),
             "meeting_url": meeting_url,
             "enlace_pendiente": link_pending,
             "recordatorios_activados": bool(result.get("reminderConsent", False)),
@@ -1143,14 +1205,14 @@ class ToolRuntime:
         self.booking_confirmation = {
             "tipo": "reschedule",
             **self._instante_de(chosen),
-            "label": chosen.label or result.get("label"),
+            "label": etiqueta_con_profesional(chosen.label, result),
             "meeting_url": meeting_url,
             "link_pending": link_pending,
             "reminder_consent": False,
         }
         return {
             "ok": True,
-            "label": chosen.label or result.get("label"),
+            "label": etiqueta_con_profesional(chosen.label, result),
             "meeting_url": meeting_url,
             "enlace_pendiente": link_pending,
             "instrucciones": (

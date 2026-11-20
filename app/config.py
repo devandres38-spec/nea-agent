@@ -204,7 +204,8 @@ class Settings(BaseSettings):
         default=2048, ge=0, validation_alias=AliasChoices("LLM_MAX_TOKENS")
     )
 
-    history_window: int = 10
+    # vocero-crm 073-C (D6): 20 mensajes, con presupuesto (app/memoria.py).
+    history_window: int = 20
 
     # Cada cuántos segundos, como mucho, se le vuelve a preguntar al CRM si
     # agenda (la bandera AGENDA de Vocero). Antes se preguntaba solo al

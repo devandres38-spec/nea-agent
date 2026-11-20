@@ -216,9 +216,16 @@ def calendario(now: datetime, tz: ZoneInfo, dias: int = DIAS_CALENDARIO) -> str:
     )
 
 
+def hora_12(dt: datetime) -> str:
+    """073-C (D7): «3:00 p. m.» — como se dice la hora en Colombia. Solo
+    presentación: lo que viaja en JSON (start_utc) sigue en ISO."""
+    h = dt.hour % 12 or 12
+    return f"{h}:{dt.minute:02d} {'a. m.' if dt.hour < 12 else 'p. m.'}"
+
+
 def _fmt_local(dt: datetime, tz: ZoneInfo) -> str:
     local = dt.astimezone(tz)
-    return f"{fecha_es(dt, tz)}, {local:%H:%M} ({hora_de(tz)})"
+    return f"{fecha_es(dt, tz)}, {hora_12(local)} ({hora_de(tz)})"
 
 
 def _parse_instante(value: object) -> datetime | None:
@@ -310,7 +317,7 @@ def _booking_lines(booking: object, now: datetime) -> list[str]:
         if fin is not None and now < fin:
             lines.append(
                 f"- Tiene una cita EN CURSO ahora mismo: {label} (termina a las "
-                f"{fin.astimezone(tz):%H:%M})." + _enlace(pasada)
+                f"{hora_12(fin.astimezone(tz))})." + _enlace(pasada)
             )
         else:
             lines.append(
@@ -397,7 +404,7 @@ def _linea_sin_personas(context: dict | None, tz: ZoneInfo) -> str | None:
     abre = _parse_instante(context.get("nextOpenAt"))
     if abre is not None:
         local = abre.astimezone(tz)
-        vuelta = f" (vuelven el {fecha_es(abre, tz)} a las {local:%H:%M})"
+        vuelta = f" (vuelven el {fecha_es(abre, tz)} a las {hora_12(local)})"
     return (
         f"- Ahora mismo NO hay personas del equipo atendiendo el chat{vuelta}. "
         "Si pasas la conversación a una persona, dile que el equipo le escribe "

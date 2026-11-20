@@ -244,7 +244,7 @@ def test_solicitar_baja_siempre_se_ofrece() -> None:
 def test_fuera_del_horario_humano_no_promete_un_asesor() -> None:
     cerrado = _prompt({"humanAvailable": False, "nextOpenAt": "2026-11-20T13:00:00Z"})
     linea = next(l for l in cerrado.splitlines() if "NO hay personas del equipo" in l)
-    assert "vuelven el viernes 20 de noviembre de 2026 a las 08:00" in linea
+    assert "vuelven el viernes 20 de noviembre de 2026 a las 8:00 a. m." in linea
     assert "nunca prometas que alguien contesta ya" in linea
     # Abierto, o sin horario configurado: ni una letra (dorados intactos).
     assert "NO hay personas" not in _prompt({"humanAvailable": True, "nextOpenAt": None})

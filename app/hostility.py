@@ -23,12 +23,30 @@ HOSTILE_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
         r"vete (mucho )?a la (verga|chingada|mierda|fregada)",
         r"chinga (tu|su) madre|chinguen a su madre|vale (verga|madre)",
         r"\bpendej[oa]s?\b|\bimb[eé]cil(es)?\b|\best[uú]pid[oa]s?\b|\bidiotas?\b",
-        r"\bestafador(es)?\b|\bestafas?\b|\bfraudes?\b|\brater[oa]s?\b|\bratas?\b|\brob[oa]s?\b",
+        r"\bestafador(es)?\b|\brater[oa]s?\b|\bratas?\b",
         r"\bchafas?\b|\bbasura\b|\bporquer[ií]a\b|\bmierdas?\b|\bculer[oa]s?\b",
         r"p[ií]nches?\s+\w+",
         r"puro humo|pura mentira|puros? cuentos?|es una farsa",
+        # 073-C (D7) — Colombia. «parce», «qué chimba», «marica» entre amigos
+        # NO cuentan: solo el insulto dirigido.
+        r"\bh?ijueputas?\b|\bjueputas?\b|\bhptas?\b|\bhp(?:s)?\s+(?:esos|esas|ustedes|todos)\b",
+        r"\bmalparid[oa]s?\b|\bgonorreas?\b|\bpirob[oa]s?\b|\bcarechimbas?\b|\bcare\s*chimbas?\b",
+        r"\bladr[oó]n(es|a|as)?\b|\btumbador(es|a|as)?\b",
     )
 )
+
+# 073-C (D7) — Acusaciones de robo o estafa: hostiles cuando se AFIRMAN
+# («esto es una estafa», «me tumbaron»), no cuando se PREGUNTAN
+# («¿esto no será una estafa?», «¿cómo sé que no me van a robar?»): esa es
+# la duda legítima de alguien que no conoce al negocio.
+ACUSACIONES: tuple[re.Pattern[str], ...] = tuple(
+    re.compile(p, re.I)
+    for p in (
+        r"\bestafas?\b|\bfraudes?\b|\batracos?\b|\brob[oa]s?\b|\brobaron\b",
+        r"\bme (?:tumbaron|robaron|estafaron)\b|\bnos (?:tumbaron|robaron|estafaron)\b",
+    )
+)
+_PREGUNTA = re.compile(r"[?¿]")
 
 # Alerta que se inyecta como mensaje de sistema en el turno del tercer strike.
 ALERT = (
@@ -41,7 +59,9 @@ ALERT = (
 
 
 def is_hostile(text: str) -> bool:
-    return any(p.search(text) for p in HOSTILE_PATTERNS)
+    if any(p.search(text) for p in HOSTILE_PATTERNS):
+        return True
+    return any(p.search(text) for p in ACUSACIONES) and not _PREGUNTA.search(text)
 
 
 def hostile_streak(user_texts: list[str]) -> int:

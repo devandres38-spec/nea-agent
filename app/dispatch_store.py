@@ -44,6 +44,8 @@ class DispatchJob:
     attempts: int = 1
     effects_at: datetime | None = None
     mark_effects: Callable[[], Awaitable[None]] | None = None
+    # 073-C (D5): ¿hay en cola un despacho MÁS NUEVO de esta conversación?
+    has_newer: Callable[[], Awaitable[bool]] | None = None
 
 
 _CLAIM = """
@@ -124,6 +126,14 @@ class PgDispatchStore:
             await self.pool.execute("""UPDATE dispatch_inbox SET effects_at=COALESCE(effects_at, now()),updated_at=now()
               WHERE organization_id=$1 AND dispatch_id=$2 AND owner=$3 AND state='started'""", org, dispatch_id, owner)
 
+        async def has_newer() -> bool:
+            return bool(await self.pool.fetchval("""SELECT EXISTS (
+              SELECT 1 FROM dispatch_inbox o, dispatch_inbox d
+              WHERE d.organization_id=$1 AND d.dispatch_id=$2
+                AND o.organization_id=d.organization_id AND o.conversation_id=d.conversation_id
+                AND o.dispatch_id<>d.dispatch_id AND o.state='queued' AND o.created_at > d.created_at)""",
+                org, dispatch_id))
+
         yield DispatchJob(
             json.loads(row["payload"]),
             bool(row["recovery"]),
@@ -134,6 +144,7 @@ class PgDispatchStore:
             attempts=int(row["attempts"] or 1),
             effects_at=row["effects_at"],
             mark_effects=mark_effects,
+            has_newer=has_newer,
         )
 
 
@@ -231,11 +242,19 @@ class MemoryDispatchStore:
                     if row.get("owner") == owner and row["state"] == "started":
                         row["effects_at"] = row.get("effects_at") or datetime.now(timezone.utc)
 
+                async def has_newer(row: dict[str, Any] = row, org: str = key[0]) -> bool:
+                    return any(
+                        k[0] == org and o["conversation_id"] == row["conversation_id"]
+                        and o is not row and o["state"] == "queued" and o["seq"] > row["seq"]
+                        for k, o in inbox.items()
+                    )
+
                 job = DispatchJob(
                     row["payload"], recovery, finish, heartbeat,
                     organization_id=key[0], conversation_id=row["conversation_id"],
                     attempts=row["attempts"], effects_at=row.get("effects_at"),
                     mark_effects=mark_effects,
+                    has_newer=has_newer,
                 )
         yield job
 

@@ -169,6 +169,10 @@ class InboundMessage:
     media_voice: bool = False
     location: dict[str, Any] | None = None
     contact_names: list[str] = field(default_factory=list)
+    # vocero-crm 073-C (D5): los teléfonos de las tarjetas (vCard), en el
+    # orden de los nombres; y el mensaje que el lead citó al responder.
+    contact_phones: list[str] = field(default_factory=list)
+    reply_to: dict[str, Any] | None = None
     # 031 — Por dónde escribe: whatsapp, instagram, messenger, tiktok… Lo
     # dice el despacho (`conversation.channel`); None si no lo dijo.
     channel: str | None = None

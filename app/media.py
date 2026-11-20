@@ -43,6 +43,41 @@ _AUDIO_EXT = {
 # 071 (D12): el marcador de una imagen que el modelo SÍ va a ver, y el que lo
 # reemplaza cuando el modelo del negocio resulta no ver imágenes.
 IMAGEN_ADJUNTA = "la tienes adjunta, puedes verla."
+# 073-C (D5): en el HISTORIAL la imagen va en pasado. En el turno siguiente
+# el modelo ya no la tiene adjunta; con el marcador en presente inventaba lo
+# que mostraba («como ves en tu foto…»).
+IMAGEN_PASADA = (
+    "ya no la tienes a la vista: no describas lo que mostraba como si la "
+    "estuvieras viendo."
+)
+
+
+def en_pasado(texto: str) -> str:
+    return texto.replace(IMAGEN_ADJUNTA, IMAGEN_PASADA)
+
+
+def en_presente(texto: str) -> str:
+    return texto.replace(IMAGEN_PASADA, IMAGEN_ADJUNTA)
+
+
+def marcador_imagenes_de_mas(n: int) -> str:
+    """073-C (D5): más de 3 imágenes en un turno — se dice, no se finge."""
+    cuantas = "otra imagen" if n == 1 else f"otras {n} imágenes"
+    return (
+        f"[El lead mandó además {cuantas} que no alcanzas a ver en este mensaje. "
+        "Si importan, pídele que te cuente qué muestran.]"
+    )
+
+
+def puede_oir(ctx: AppContext) -> bool:
+    """073-C (D5): ¿hay un modelo que transcriba? Sin él no se piden audios."""
+    return bool(getattr(ctx.llm, "puede_transcribir", True))
+
+
+def _texto_o_voz(oye: bool) -> str:
+    return "en texto o nota de voz" if oye else "en texto (por aquí no puedes escuchar audios)"
+
+
 IMAGEN_SIN_VISION = (
     "pero por aquí no puedes ver imágenes. Con honestidad: dile que no "
     "alcanzas a verla y pídele que te cuente qué muestra."
@@ -64,7 +99,7 @@ def _caption_line(msg: InboundMessage, junto_a: str) -> str:
     return ""
 
 
-def _honest_failure(msg: InboundMessage) -> MediaPart:
+def _honest_failure(msg: InboundMessage, oye: bool = True) -> MediaPart:
     nombres = {
         "audio": "una nota de voz",
         "image": "una imagen",
@@ -77,17 +112,17 @@ def _honest_failure(msg: InboundMessage) -> MediaPart:
         text=(
             f"[El lead mandó {que} que NO pudiste abrir/procesar."
             f"{_caption_line(msg, 'ese contenido')} Con honestidad: dile que no lo"
-            " pudiste abrir y pídele el contenido en texto o nota de voz.]"
+            f" pudiste abrir y pídele el contenido {_texto_o_voz(oye)}.]"
         )
     )
 
 
 async def _audio(ctx: AppContext, msg: InboundMessage) -> MediaPart:
     if not msg.media_id:
-        return _honest_failure(msg)
+        return _honest_failure(msg, puede_oir(ctx))
     data, mime = await ctx.crm.get_media(msg.media_id)
     if len(data) > MAX_MEDIA_BYTES:
-        return _honest_failure(msg)
+        return _honest_failure(msg, puede_oir(ctx))
     mime_clean = (mime or msg.media_mime or "audio/ogg").split(";")[0].strip()
     ext = _AUDIO_EXT.get(mime_clean, "ogg")
     transcript = await ctx.llm.transcribe(
@@ -99,7 +134,7 @@ async def _audio(ctx: AppContext, msg: InboundMessage) -> MediaPart:
 
 async def _image(ctx: AppContext, msg: InboundMessage) -> MediaPart:
     if not msg.media_id:
-        return _honest_failure(msg)
+        return _honest_failure(msg, puede_oir(ctx))
     data, mime = await ctx.crm.get_media(msg.media_id)
     caption = _caption_line(msg, "la imagen")
     if len(data) > MAX_IMAGE_BYTES:
@@ -146,10 +181,10 @@ async def _pdf_text(data: bytes) -> str | None:
 async def _document(ctx: AppContext, msg: InboundMessage) -> MediaPart:
     filename = dato_no_confiable(msg.media_filename, 80) or "documento"
     if not msg.media_id:
-        return _honest_failure(msg)
+        return _honest_failure(msg, puede_oir(ctx))
     data, mime = await ctx.crm.get_media(msg.media_id)
     if len(data) > MAX_MEDIA_BYTES:
-        return _honest_failure(msg)
+        return _honest_failure(msg, puede_oir(ctx))
     mime_clean = (mime or msg.media_mime or "").split(";")[0].strip()
     text: str | None = None
     if mime_clean == "application/pdf" or filename.lower().endswith(".pdf"):
@@ -202,6 +237,11 @@ async def _location(ctx: AppContext, msg: InboundMessage) -> MediaPart:
 
 async def _contacts(ctx: AppContext, msg: InboundMessage) -> MediaPart:
     nombres = ", ".join(dato_no_confiable(n, 60) for n in msg.contact_names[:5]) or "alguien"
+    # 073-C (D5): con los teléfonos de la vCard el agente puede guardarlos o
+    # pasárselos al equipo sin pedirlos otra vez.
+    telefonos = ", ".join(dato_no_confiable(t, 30) for t in msg.contact_phones[:5])
+    if telefonos:
+        nombres = f"{nombres} (teléfonos: {telefonos})"
     return MediaPart(
         text=(
             f"[El lead compartió una tarjeta de contacto de: {nombres}."
@@ -215,7 +255,11 @@ async def _video(ctx: AppContext, msg: InboundMessage) -> MediaPart:
         text=(
             "[El lead mandó un video — NO puedes ver videos todavía."
             f"{_caption_line(msg, 'el video')} Con honestidad, ofrécele que te lo"
-            " cuente en texto o con una nota de voz (esas sí las entiendes).]"
+            + (
+                " cuente en texto o con una nota de voz (esas sí las entiendes).]"
+                if puede_oir(ctx)
+                else " cuente en texto.]"
+            )
         )
     )
 
@@ -224,12 +268,18 @@ async def _fallback(ctx: AppContext, msg: InboundMessage) -> MediaPart:
     return MediaPart(
         text=(
             f"[El lead mandó contenido que no puedes ver (tipo: {msg.type})."
-            " Con honestidad: pídele que te lo mande como texto o nota de voz.]"
+            f" Con honestidad: pídele que te lo mande {_texto_o_voz(puede_oir(ctx))}.]"
         )
     )
 
 
+async def _reaction(ctx: AppContext, msg: InboundMessage) -> MediaPart:
+    """073-C (D5): una reacción (👍) no es contenido para contestar."""
+    return MediaPart(text=None)
+
+
 _HANDLERS = {
+    "reaction": _reaction,
     "audio": _audio,
     "image": _image,
     "document": _document,
@@ -256,4 +306,4 @@ async def describe_item(ctx: AppContext, msg: InboundMessage) -> MediaPart:
             msg.type,
             msg.media_id,
         )
-        return _honest_failure(msg)
+        return _honest_failure(msg, puede_oir(ctx))
