@@ -204,3 +204,84 @@ async def test_un_rechazo_definitivo_no_bloquea_a_los_siguientes(respx_mock) -> 
     assert ruta.call_count == 2
     assert all(ctx.store.pending_sends[i].abandoned_at is not None for i in ids)
     await ctx.crm.aclose()
+
+
+# ── Auditoría 074 ─────────────────────────────────────────────────────────
+
+
+async def test_la_respuesta_partida_que_cruza_el_lote_tambien_espera(respx_mock) -> None:
+    """12 trozos (el lote es de 10): si el 1 falla, el 11 y el 12 —que ni
+    entraron en la pasada— quedan detrás de él en el store."""
+    ctx = make_ctx()
+    conv = await ctx.store.get_or_create_conversation(IDENTITY)
+    ids = [await ctx.store.enqueue_pending_send(conv.id, CRM_CONV_ID, f"Parte {i}") for i in range(1, 13)]
+    enviados: list[str] = []
+
+    def responder(request: httpx.Request) -> httpx.Response:
+        texto = json.loads(request.content)["text"]
+        if texto == "Parte 1":
+            return httpx.Response(503, json={"error": {"code": "meta_unavailable"}})
+        enviados.append(texto)
+        return httpx.Response(200, json={"messageId": "m"})
+
+    respx_mock.post(f"{CRM_URL}/api/bot/messages").mock(side_effect=responder)
+    await SenderWorker(ctx).tick(utcnow())
+    assert enviados == []
+    p1 = ctx.store.pending_sends[ids[0]]
+    assert all(ctx.store.pending_sends[i].next_retry_at > p1.next_retry_at for i in ids[1:])
+    # Entre las dos pasadas el 11 y el 12 no salen solos.
+    await SenderWorker(ctx).tick(p1.next_retry_at - timedelta(seconds=1))
+    assert enviados == []
+    await ctx.crm.aclose()
+
+
+async def test_un_trozo_que_caduca_corta_la_respuesta_con_un_solo_handoff(respx_mock) -> None:
+    ctx = make_ctx()
+    conv = await ctx.store.get_or_create_conversation(IDENTITY)
+    ids = [await ctx.store.enqueue_pending_send(conv.id, CRM_CONV_ID, f"Parte {i}") for i in (1, 2, 3)]
+    for i in ids:
+        ctx.store.pending_sends[i].created_at = utcnow() - timedelta(minutes=20)
+    mensajes = respx_mock.post(f"{CRM_URL}/api/bot/messages").mock(return_value=httpx.Response(200, json={}))
+    handoff = respx_mock.post(f"{CRM_URL}/api/bot/handoff").mock(return_value=httpx.Response(200, json={}))
+    await SenderWorker(ctx).tick(utcnow())
+    assert mensajes.call_count == 0
+    assert handoff.call_count == 1
+    assert all(ctx.store.pending_sends[i].abandoned_at is not None for i in ids)
+    await ctx.crm.aclose()
+
+
+async def test_un_rechazo_definitivo_no_deja_trozos_huerfanos(respx_mock) -> None:
+    ctx = make_ctx()
+    conv = await ctx.store.get_or_create_conversation(IDENTITY)
+    ids = [await ctx.store.enqueue_pending_send(conv.id, CRM_CONV_ID, f"Parte {i}") for i in (1, 2, 3)]
+    mensajes = respx_mock.post(f"{CRM_URL}/api/bot/messages").mock(
+        return_value=httpx.Response(422, json={"error": {"code": "envio_permanente", "message": "131026"}})
+    )
+    handoff = respx_mock.post(f"{CRM_URL}/api/bot/handoff").mock(return_value=httpx.Response(200, json={}))
+    await SenderWorker(ctx).tick(utcnow())
+    assert mensajes.call_count == 1  # el 2 y el 3 no salen huérfanos
+    assert handoff.call_count == 1
+    assert all(ctx.store.pending_sends[i].abandoned_at is not None for i in ids)
+    await ctx.crm.aclose()
+
+
+def test_pgstore_empuja_y_abandona_solo_lo_posterior_de_esa_conversacion() -> None:
+    import inspect
+
+    from app.db import PgStore
+
+    for nombre in ("empujar_pendientes_posteriores", "abandonar_pendientes_posteriores"):
+        fuente = inspect.getsource(getattr(PgStore, nombre))
+        for trozo in ("organization_id = $1", "crm_conversation_id = $2", "id > $3", "kind = 'message'", "delivered_at IS NULL", "abandoned_at IS NULL"):
+            assert trozo in fuente, (nombre, trozo)
+    assert "GREATEST(next_retry_at, $4)" in inspect.getsource(PgStore.empujar_pendientes_posteriores)
+
+
+async def test_whisper_tambien_lleva_la_cabecera_del_despacho(respx_mock) -> None:
+    ruta = respx_mock.post("https://api.openai.com/v1/audio/transcriptions").mock(
+        return_value=httpx.Response(200, json={"text": "hola"})
+    )
+    llm = OpenAiLlm("k", "m", transcribe_model="whisper-1", cabecera_despacho=True)
+    with contexto_de_log(dispatch="dsp_9"):
+        assert await llm.transcribe(b"x", "audio/ogg") == "hola"
+    assert ruta.calls[0].request.headers.get("x-vocero-dispatch") == "dsp_9"

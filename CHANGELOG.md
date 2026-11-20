@@ -6,6 +6,17 @@ Qué cambia en cada versión de Nea y qué hacer al actualizar. Cada tag
 
 ## Sin publicar
 
+### Parche de auditoría 074
+
+- **Respuesta partida, orden también entre pasadas**: si un trozo falla de
+  forma pasajera, los trozos siguientes de esa conversación se empujan en la
+  cola detrás de él, aunque la respuesta tenga más trozos que el lote de una
+  pasada (`empujar_pendientes_posteriores`, Pg y memoria).
+- **Sin trozos huérfanos**: si un trozo caduca o el CRM lo rechaza para
+  siempre, los siguientes de esa conversación se abandonan con él y hay UN
+  solo handoff.
+- `X-Vocero-Dispatch` también en la transcripción por el endpoint de audio.
+
 ### KB de producción, prompt caching y observabilidad (vocero-crm 074)
 
 - **Enlaces oficiales del negocio**: `resources` llega también por

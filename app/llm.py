@@ -361,6 +361,7 @@ class OpenAiLlm:
         for attempt in range(2):
             try:
                 resp = await self._client.audio.transcriptions.create(
+                    **self._cabeceras_del_turno(),
                     model=self._transcribe_model,
                     file=(filename, data, content_type),
                     language="es",

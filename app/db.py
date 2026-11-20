@@ -479,6 +479,47 @@ class PgStore(PgDispatchStore):
             next_retry_at,
         )
 
+    async def empujar_pendientes_posteriores(
+        self, organization_id: str, crm_conversation_id: str, after_id: int, no_antes_de: datetime
+    ) -> int:
+        """vocero-crm 074 (auditoria) - Los trozos posteriores de la misma
+        conversacion no salen antes que el que fallo, aunque la respuesta
+        partida haya cruzado el lote (LOTE) de una pasada."""
+        resultado = await self.pool.execute(
+            """
+            UPDATE pending_send SET next_retry_at = GREATEST(next_retry_at, $4)
+            WHERE organization_id = $1 AND crm_conversation_id = $2 AND id > $3
+              AND kind = 'message' AND delivered_at IS NULL AND abandoned_at IS NULL
+            """,
+            organization_id,
+            crm_conversation_id,
+            after_id,
+            no_antes_de,
+        )
+        try:
+            return int(str(resultado).split()[-1])
+        except (ValueError, IndexError):
+            return 0
+
+    async def abandonar_pendientes_posteriores(
+        self, organization_id: str, crm_conversation_id: str, after_id: int
+    ) -> list[int]:
+        """vocero-crm 074 (auditoria) - Si un trozo ya no va a salir (caduco o
+        rechazo definitivo), los que venian detras tampoco: un trozo 2 sin el 1
+        no tiene sentido para el lead."""
+        filas = await self.pool.fetch(
+            """
+            UPDATE pending_send SET abandoned_at = now()
+            WHERE organization_id = $1 AND crm_conversation_id = $2 AND id > $3
+              AND kind = 'message' AND delivered_at IS NULL AND abandoned_at IS NULL
+            RETURNING id
+            """,
+            organization_id,
+            crm_conversation_id,
+            after_id,
+        )
+        return [int(f["id"]) for f in filas]
+
     # -------------------------------------------------------- seguimiento ---
 
     async def due_followups(self, now: datetime) -> list[Conversation]:

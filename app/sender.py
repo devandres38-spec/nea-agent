@@ -23,7 +23,7 @@ from datetime import datetime, timedelta
 from app.crm import CrmConflict, CrmError, CrmRechazo, envio_terminal
 from app.multiorg import contexto_del_turno, ctx_de_organizacion
 from app.observabilidad import contexto_de_log
-from app.state import KIND_HANDOFF, AppContext, PendingSend, leer_handoff, utcnow
+from app.state import KIND_HANDOFF, KIND_MESSAGE, AppContext, PendingSend, leer_handoff, utcnow
 
 logger = logging.getLogger("nea.sender")
 
@@ -72,8 +72,14 @@ class SenderWorker:
         # conversación no se intenta en esta pasada: se mueve detrás de la N.
         # Las demás conversaciones no esperan.
         bloqueadas: dict[tuple[str, str], datetime] = {}
+        # Auditoria 074: conversaciones cuya respuesta partida ya no sale (un
+        # trozo caduco o fue rechazado para siempre): sus trozos siguientes se
+        # abandonaron con un solo handoff y no se intentan.
+        self._cortadas: set[tuple[str, str]] = set()
         for item in pendientes:
             clave = (item.organization_id or "", item.crm_conversation_id or "")
+            if item.kind == KIND_MESSAGE and clave in self._cortadas:
+                continue
             if clave in bloqueadas:
                 # Justo detrás del que falló (no del lease: con lease, `next_retry_at`
                 # de una fila reclamada es el fin de la reserva, no su turno).
@@ -120,11 +126,12 @@ class SenderWorker:
                     logger.error("sender: el handoff pendiente %d caducó sin registrarse", item.id)
                 else:
                     # 073-A (D3): nunca una respuesta obsoleta; una persona.
+                    # Auditoria 074: tampoco sus trozos siguientes; UN handoff.
                     logger.error(
                         "sender: pending %d no salió a tiempo — abandonado + handoff",
                         item.id,
                     )
-                    await self._handoff(ctx, item)
+                    await self._cortar(ctx, item)
                 continue
             with contexto_de_log(
                 org=item.organization_slug or item.organization_id or None,
@@ -184,9 +191,21 @@ class SenderWorker:
                 # a la persona que tiene que atenderlo.
                 logger.error("sender: pending %d rechazado para siempre (%s) — abandonado + handoff", item.id, exc)
                 await ctx.store.mark_pending_send_abandoned(item.id)
-                await self._handoff(ctx, item)
+                await self._cortar(ctx, item)
                 return None
-            return await self._reprogramar(ctx, item, now, exc)
+            siguiente = await self._reprogramar(ctx, item, now, exc)
+            # Auditoria 074: los trozos siguientes de esta conversacion que
+            # NO entraron en esta pasada (respuesta partida mas larga que el
+            # lote) tampoco pueden salir antes que este.
+            empujar = getattr(ctx.store, "empujar_pendientes_posteriores", None)
+            if callable(empujar):
+                await empujar(
+                    item.organization_id,
+                    item.crm_conversation_id,
+                    item.id,
+                    siguiente + timedelta(milliseconds=1),
+                )
+            return siguiente
         await ctx.store.mark_pending_send_delivered(item.id)
         # Al historial local: Nea debe recordar lo que (por fin) dijo.
         await ctx.store.add_message(item.conversation_id, "assistant", item.content)
@@ -226,6 +245,27 @@ class SenderWorker:
         siguiente = now + timedelta(seconds=delay)
         await ctx.store.reschedule_pending_send(item.id, attempts, siguiente)
         return siguiente
+
+    async def _cortar(self, ctx: AppContext, item: PendingSend) -> None:
+        """Auditoria 074 - Un trozo `message` que ya no va a salir: se
+        abandonan tambien los trozos siguientes de su conversacion (un trozo 2
+        sin el 1 no le sirve al lead) y se hace UN solo handoff."""
+        clave = (item.organization_id or "", item.crm_conversation_id or "")
+        cortadas = getattr(self, "_cortadas", None)
+        if cortadas is not None:
+            if clave in cortadas:
+                return
+            cortadas.add(clave)
+        abandonar = getattr(ctx.store, "abandonar_pendientes_posteriores", None)
+        if callable(abandonar):
+            ids = await abandonar(item.organization_id, item.crm_conversation_id, item.id)
+            if ids:
+                logger.error(
+                    "sender: %d trozo(s) siguientes de pending %d abandonados con él",
+                    len(ids),
+                    item.id,
+                )
+        await self._handoff(ctx, item)
 
     async def _handoff(self, ctx: AppContext, item: PendingSend) -> None:
         """Handoff `error` tras abandonar una respuesta.
