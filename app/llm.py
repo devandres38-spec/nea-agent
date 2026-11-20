@@ -15,6 +15,8 @@ import asyncio
 import base64
 import json
 import logging
+import re
+import time
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -114,6 +116,46 @@ def _formato_de_audio(mime: str) -> str:
 # Segundos por intento, el default de LLM_TIMEOUT_SECONDS (ver config.py).
 DEFAULT_TIMEOUT = 45.0
 
+# 2.13.1 — Tope de tokens de salida por llamada, el default de
+# LLM_MAX_TOKENS (ver config.py). Sin tope, una salida desbocada se cobra
+# entera de la llave del negocio; demasiado bajo, trunca a media llamada de
+# herramienta (JSON roto → `{}`) o el razonamiento. 0 = no se manda.
+DEFAULT_MAX_TOKENS = 2048
+
+# 2.13.1 — Cuánto duran apagados los ajustes de velocidad tras una queja del
+# proveedor. Antes era para siempre (hasta reiniciar el contenedor).
+EXTRAS_APAGADOS_SEGUNDOS = 3600.0
+
+# 2.13.1 — Una queja de los ajustes NOMBRA el parámetro. «Upstream provider
+# returned 502» o «Provider returned error» dicen `provider` y no hablan del
+# parámetro: con la regla de antes, un 502 pasajero de OpenRouter apagaba los
+# ajustes para siempre.
+_NOMBRA_LOS_EXTRAS = re.compile(
+    r"reasoning"
+    r"|provider\.sort"
+    r"|[\"'`]provider[\"'`]"
+    r"|[\"'`]sort[\"'`]"
+    r"|\b(?:provider|sort) (?:field|param|parameter|option|preferences?)\b",
+    re.IGNORECASE,
+)
+
+
+def _corto_por_el_tope(resp: Any) -> bool:
+    """¿La respuesta se cortó por `max_tokens`?"""
+    choices = getattr(resp, "choices", None) or []
+    return bool(choices) and getattr(choices[0], "finish_reason", None) == "length"
+
+
+def _es_queja_de_los_extras(exc: Exception) -> bool:
+    """¿El proveedor rechazó la petición (400) por `reasoning`/`provider`?
+
+    Solo un 400: un 429 o un 5xx no dicen nada de si el modelo acepta los
+    ajustes, y un error sin código HTTP (red, timeout) tampoco.
+    """
+    if getattr(exc, "status_code", None) != 400:
+        return False
+    return bool(_NOMBRA_LOS_EXTRAS.search(str(exc)))
+
 
 class OpenAiLlm:
     RETRIES = 2  # además del intento inicial
@@ -129,6 +171,7 @@ class OpenAiLlm:
         provider_sort: str = "",
         timeout: float = DEFAULT_TIMEOUT,
         http_client: Any | None = None,
+        max_tokens: int = DEFAULT_MAX_TOKENS,
     ) -> None:
         # base_url ≠ None → proveedor OpenAI-compatible (p. ej. OpenRouter,
         # para el bench de modelos del 002). Ojo: la transcripción de audio
@@ -163,7 +206,11 @@ class OpenAiLlm:
         # cada llamada; `_extras_ok` los apaga solos si el proveedor se queja.
         self._reasoning_effort = reasoning_effort.strip()
         self._provider_sort = provider_sort.strip()
-        self._extras_ok = True
+        # 2.13.1 — Hasta cuándo (reloj monotónico) siguen apagados. None =
+        # encendidos. Caduca: el proveedor detrás de OpenRouter cambia.
+        self._extras_apagados_hasta: float | None = None
+        # 2.13.1 — Tope de salida por llamada de chat (no por transcripción).
+        self._max_tokens = max(0, int(max_tokens or 0))
         # 071 (D12) — ¿El modelo ve imágenes? Se aprende del primer rechazo y
         # es pegajoso, como `_extras_ok`: el soporte no cambia a media vida.
         self._vision_ok = True
@@ -294,27 +341,41 @@ class OpenAiLlm:
             extra["provider"] = {"sort": self._provider_sort}
         return extra
 
+    @property
+    def _extras_ok(self) -> bool:
+        """¿Se mandan hoy los ajustes de velocidad? Se reencienden solos."""
+        hasta = self._extras_apagados_hasta
+        if hasta is None:
+            return True
+        if time.monotonic() >= hasta:
+            self._extras_apagados_hasta = None
+            logger.info("llm: vuelvo a probar los ajustes de velocidad con %s", self._model)
+            return True
+        return False
+
     def _quiza_por_los_extras(self, exc: Exception) -> None:
-        """Si el proveedor se quejo de `reasoning` o `provider`, se apagan.
+        """Si el proveedor rechazó `reasoning` o `provider`, se apagan un rato.
 
         Aqui pasan modelos de muchos miembros, no uno solo elegido por
         nosotros. Bajar el tiempo de respuesta es una optimizacion, y una
         optimizacion no puede costar la respuesta: al primer reproche este
         cliente deja de mandarlos y el reintento sale limpio.
 
-        Es pegajoso a proposito -el soporte del modelo no cambia a media vida
-        del proceso- y por organizacion, porque cada una tiene el suyo.
+        2.13.1 — Solo un 400 que NOMBRA el parámetro (`_es_queja_de_los_extras`)
+        y solo por `EXTRAS_APAGADOS_SEGUNDOS`: antes cualquier error con la
+        palabra «provider» —un 502 o un 429 pasajero de OpenRouter— los
+        apagaba hasta reiniciar el contenedor. Sigue siendo por organización,
+        porque cada una tiene su cliente.
         """
-        if not self._extras_ok:
+        if not self._extras_ok or not _es_queja_de_los_extras(exc):
             return
-        texto = str(exc).lower()
-        if "reasoning" in texto or "provider" in texto:
-            self._extras_ok = False
-            logger.warning(
-                "llm: %s no acepta los ajustes de velocidad - se apagan para "
-                "este modelo y se reintenta sin ellos",
-                self._model,
-            )
+        self._extras_apagados_hasta = time.monotonic() + EXTRAS_APAGADOS_SEGUNDOS
+        logger.warning(
+            "llm: %s no acepta los ajustes de velocidad - se apagan %d min para "
+            "este modelo y se reintenta sin ellos",
+            self._model,
+            int(EXTRAS_APAGADOS_SEGUNDOS // 60),
+        )
 
     async def complete(
         self,
@@ -324,12 +385,20 @@ class OpenAiLlm:
         if not self._vision_ok and tiene_imagenes(messages):
             raise ImagenNoSoportada(f"{self._model} no acepta imágenes (ya se sabía)")
         last_error: Exception | None = None
-        for attempt in range(self.RETRIES + 1):
+        # 2.13.1 — El tope de ESTA llamada. Si el modelo choca con él
+        # (`finish_reason=length`) lo que trae está cortado —una herramienta
+        # con el JSON a medias, una frase sin terminar—: se repite UNA vez con
+        # el doble en vez de mandarlo así. Sigue acotado (ver config.py).
+        tope = self._max_tokens
+        attempt = 0
+        while attempt <= self.RETRIES:
             try:
                 kwargs: dict[str, Any] = {}
                 if tools:
                     kwargs["tools"] = tools
                     kwargs["tool_choice"] = "auto"
+                if tope:
+                    kwargs["max_tokens"] = tope
                 extra = self._extras()
                 if extra:
                     kwargs["extra_body"] = extra
@@ -343,6 +412,15 @@ class OpenAiLlm:
                     self.usage["prompt"] += getattr(u, "prompt_tokens", 0) or 0
                     self.usage["completion"] += getattr(u, "completion_tokens", 0) or 0
                     self.usage["cached"] += getattr(det, "cached_tokens", 0) or 0
+                if tope and tope == self._max_tokens and _corto_por_el_tope(resp):
+                    tope = self._max_tokens * 2
+                    logger.warning(
+                        "llm: %s chocó con el tope de %d tokens — repito con %d",
+                        self._model,
+                        self._max_tokens,
+                        tope,
+                    )
+                    continue  # sin espera ni gastar intento: no es un fallo
                 reply = self._parse(resp)
                 if reply.content or reply.tool_calls:
                     return reply
@@ -358,6 +436,7 @@ class OpenAiLlm:
                 logger.warning("llm: fallo en intento %d: %s", attempt + 1, exc)
             if attempt < self.RETRIES:
                 await asyncio.sleep(2**attempt)  # 1 s, 2 s
+            attempt += 1
         raise LlmExhausted(str(last_error))
 
     @staticmethod
@@ -433,6 +512,7 @@ class LlmPorElCrm:
         reasoning_effort: str = "",
         provider_sort: str = "",
         timeout: float = DEFAULT_TIMEOUT,
+        max_tokens: int = DEFAULT_MAX_TOKENS,
     ) -> None:
         self._crm = crm_base_url.rstrip("/")
         self._api_key = api_key
@@ -442,6 +522,7 @@ class LlmPorElCrm:
         self._reasoning_effort = reasoning_effort
         self._provider_sort = provider_sort
         self._timeout = timeout
+        self._max_tokens = max_tokens
         self._clientes: dict[tuple[str, str], OpenAiLlm] = {}
 
     async def _eleccion(self) -> tuple[str, str]:
@@ -476,6 +557,7 @@ class LlmPorElCrm:
                 reasoning_effort=self._reasoning_effort,
                 provider_sort=self._provider_sort,
                 timeout=self._timeout,
+                max_tokens=self._max_tokens,
             )
             self._clientes[clave] = cliente
             logger.info("llm por el CRM: pienso con %s", model)

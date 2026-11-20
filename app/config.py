@@ -166,13 +166,22 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("LLM_TIMEOUT_SECONDS"),
     )
 
-    # NO hay tope de tokens de salida, y es una decisión, no un olvido.
+    # Tope de tokens de salida por llamada de chat (2.13.1). 0 = sin tope.
     #
-    # En huaraches se puso uno el 8-sep con un banco que prometía partir a la
-    # mitad el peor caso. En producción hizo lo contrario: el modelo gastaba
+    # Historia: en huaraches se puso uno BAJO el 8-sep con un banco que
+    # prometía partir a la mitad el peor caso. En producción el modelo gastaba
     # los tokens razonando, chocaba con la pared y había que repetir la
-    # llamada entera. Un turno de 53 s. El tope convertía UNA llamada lenta en
-    # DOS. Se quitó el mismo día.
+    # llamada entera: un turno de 53 s. Se quitó el mismo día.
+    #
+    # Vuelve en la 2.13.1 por otra razón —proteger la llave BYOK del negocio
+    # de una salida desbocada— y con dos diferencias: es ALTO (2048 holgan
+    # para una respuesta de WhatsApp más sus llamadas de herramienta, con el
+    # razonamiento en "minimal") y una llamada que choca con él
+    # (`finish_reason=length`) no se manda cortada: se repite UNA vez con el
+    # doble (ver `OpenAiLlm.complete`). Bajarlo de ~1500 reabre el problema.
+    llm_max_tokens: int = Field(
+        default=2048, ge=0, validation_alias=AliasChoices("LLM_MAX_TOKENS")
+    )
 
     history_window: int = 10
 

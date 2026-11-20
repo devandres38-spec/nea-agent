@@ -80,7 +80,17 @@ class BusinessProfile:
 
     @property
     def has_knowledge(self) -> bool:
-        return bool((self.instructions or "").strip() or (self.kb_text or "").strip())
+        """¿Hay base de conocimiento (KB) de verdad?
+
+        2.13.1 — Antes bastaban las `instructions`: un negocio con tres líneas
+        de instrucciones y el KB vacío pasaba por «con conocimiento», el prompt
+        callaba la advertencia y el modelo improvisaba precios y horarios.
+        """
+        return bool((self.kb_text or "").strip())
+
+    @property
+    def has_instructions(self) -> bool:
+        return bool((self.instructions or "").strip())
 
 
 def profile_from_payload(payload: dict[str, Any], default_name: str) -> BusinessProfile:

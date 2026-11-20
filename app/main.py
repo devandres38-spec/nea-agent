@@ -132,6 +132,7 @@ def _llm_del_arranque(settings: Settings, perfil: ProfileProvider | None) -> Any
             reasoning_effort=settings.llm_reasoning_effort,
             provider_sort=settings.llm_provider_sort,
             timeout=settings.llm_timeout_seconds,
+            max_tokens=settings.llm_max_tokens,
         )
     return OpenAiLlm(
         settings.llm_api_key,
@@ -141,6 +142,7 @@ def _llm_del_arranque(settings: Settings, perfil: ProfileProvider | None) -> Any
         reasoning_effort=settings.llm_reasoning_effort,
         provider_sort=settings.llm_provider_sort,
         timeout=settings.llm_timeout_seconds,
+        max_tokens=settings.llm_max_tokens,
     )
 
 

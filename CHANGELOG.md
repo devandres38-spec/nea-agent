@@ -6,6 +6,27 @@ Qué cambia en cada versión de Nea y qué hacer al actualizar. Cada tag
 
 ## Sin publicar
 
+### Hotfixes del bot (vocero-crm 2.13.1)
+
+- **Un 502 o un 429 de OpenRouter ya no apaga los ajustes de velocidad.**
+  Antes cualquier error con la palabra «provider» («Upstream provider
+  returned 502») apagaba `reasoning` y `provider.sort` hasta reiniciar el
+  contenedor. Ahora solo un **400 que nombra el parámetro**, y por **1 hora**:
+  después se vuelven a probar.
+- **Tope de salida `LLM_MAX_TOKENS`** (nuevo, default `2048`, `0` = sin tope)
+  en cada llamada de chat, para que una salida desbocada no se cobre entera
+  de la llave del negocio. No aplica a transcribir. Es alto a propósito: el
+  tope bajo de septiembre hacía chocar al modelo razonando. Si una llamada
+  choca (`finish_reason=length`) no se manda cortada —ni texto a medias ni
+  una herramienta con el JSON roto—: se repite UNA vez con el doble, sin
+  gastar un reintento.
+- **«Hay conocimiento» mira el KB, no las instrucciones.** Un negocio con
+  instrucciones y el KB vacío ya no pasa por «con conocimiento»: el prompt le
+  avisa al modelo que no invente precios, horarios ni direcciones que no
+  estén en sus instrucciones. Sin instrucciones ni KB, el aviso de siempre
+  (dorados B0 intactos).
+- Actualizar: redesplegar. `LLM_MAX_TOKENS` es opcional.
+
 ### Herramientas de módulo (vocero-crm 072, ronda B)
 
 - **Herramientas propias del negocio.** Si el CRM (2.13+) manda
