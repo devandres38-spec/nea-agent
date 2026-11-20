@@ -29,7 +29,7 @@ from app.prompt import build_system_prompt
 from app.state import Conversation
 from app.tools import ToolRuntime
 from tests.conftest import make_ctx
-from tests.test_chasis_dorado import AHORA, BOGOTA, CASOS, DORADOS
+from tests.test_chasis_dorado import AHORA, BOGOTA, CASOS, DORADOS, aplicar_deltas_073
 
 EVENTOS = [
     {"key": "fecha_evento", "label": "Fecha del evento", "type": "date", "required": True,
@@ -186,7 +186,8 @@ def test_dorado_cloud_con_ficha():
     archivo = DORADOS / "072_cloud_con_ficha.txt"
     if os.environ.get("NEA_ACTUALIZAR_DORADOS") == "1":
         archivo.write_bytes(prompt.encode("utf-8"))
-    assert prompt == archivo.read_bytes().decode("utf-8")
+    # 073-B: los dorados no se regeneran; se les aplican los DELTAS_073.
+    assert prompt == aplicar_deltas_073(archivo.read_bytes().decode("utf-8"))
 
 
 # ──────────────────────────────────────────────────── tamaño (SC-4) ───

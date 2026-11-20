@@ -201,7 +201,14 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "reason": {
                         "type": "string",
                         "description": "Motivo breve (p.ej. 'pidió humano', 'duda fuera del conocimiento')",
-                    }
+                    },
+                    "resumen": {
+                        "type": "string",
+                        "description": (
+                            "Resumen para el equipo (máx. 2 frases): qué quiere el lead, qué "
+                            "datos ya diste y qué falta. Lo lee una persona, no el lead."
+                        ),
+                    },
                 },
             },
         },
@@ -601,6 +608,10 @@ class ToolRuntime:
         self._tz = tz or _zona_del_negocio(ctx)
         # Efectos observables por turn.py:
         self.handoff_reason: str | None = None  # se ejecuta DESPUÉS de la despedida
+        # 073-B (D2): el resumen para el equipo que acompaña al handoff.
+        self.handoff_summary: str | None = None
+        # 073-B (D6): el lead pidió la baja (Ley 1581) — el turno no escribe.
+        self.baja = False
         self.booked = False
         self.booking_confirmation: dict[str, Any] | None = None
         self.routed_out = False
@@ -1164,9 +1175,31 @@ class ToolRuntime:
 
     def _handoff(self, args: dict[str, Any]) -> dict[str, Any]:
         self.handoff_reason = str(args.get("reason") or "lead_request")
+        resumen = " ".join(str(args.get("resumen") or "").split())[:500]
+        self.handoff_summary = resumen or None
         return {
             "ok": True,
             "nota": (
                 "el pase a humano se ejecutará después de tu mensaje de despedida"
             ),
         }
+
+
+# vocero-crm 073-B (D6, Ley 1581) — La baja que el detector del CRM no
+# reconoce (lo dudoso). Va con la clave `escalar`, que nunca se apaga: pedir
+# la baja es un derecho del lead, no una función opcional del negocio.
+SOLICITAR_BAJA_SCHEMA: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "solicitar_baja",
+        "description": (
+            "Registra que el lead NO quiere recibir más mensajes (Ley 1581 de "
+            "protección de datos). Úsala solo si lo pide con claridad: que no le "
+            "escriban más, darse de baja, que borren sus datos. Si dudas (p. ej. "
+            "«ya no me interesa»), pregúntale antes si quiere dejar de recibir "
+            "mensajes. Después de llamarla NO escribas nada: el sistema le "
+            "confirma la baja."
+        ),
+        "parameters": {"type": "object", "properties": {}},
+    },
+}

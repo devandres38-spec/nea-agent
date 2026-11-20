@@ -121,8 +121,13 @@ class CrmDeEnsayo:
     async def post_typing(self, conversation_id: str) -> None:
         return None
 
-    async def post_handoff(self, conversation_id: str, reason: str | None = None) -> None:
-        self.eventos.append({"type": "handoff", "reason": reason})
+    async def post_handoff(
+        self, conversation_id: str, reason: str | None = None, *, summary: str | None = None
+    ) -> None:
+        evento: dict[str, Any] = {"type": "handoff", "reason": reason}
+        if summary:
+            evento["summary"] = summary
+        self.eventos.append(evento)
         # Lo que hace el CRM de verdad: con handoff la IA se calla. Así el
         # ensayo enseña que tras «quiero hablar con una persona» el agente ya
         # no contesta, que es lo que va a ver el cliente.

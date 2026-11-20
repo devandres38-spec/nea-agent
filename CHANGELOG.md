@@ -6,6 +6,24 @@ Qué cambia en cada versión de Nea y qué hacer al actualizar. Cada tag
 
 ## Sin publicar
 
+### Humano↔Bot y seguridad (vocero-crm 073-B)
+
+- **Lo que pasó con una persona**: si el contexto trae `humanGap`, Nea lo lee
+  una vez como nota de sistema (antes de lo que el lead acaba de escribir) y
+  no lo guarda en su historial.
+- **Datos de afuera como datos**: nombre del perfil, ficha, titular del
+  anuncio, pies de foto, nombres de archivo, transcripciones y PDF entran
+  enmarcados, en una línea y sin corchetes. El lead ya no puede escribir un
+  marcador `[...]`: sus corchetes llegan como paréntesis.
+- **`solicitar_baja`** (siempre disponible): handoff `opt_out`; el CRM confirma
+  al lead y Nea no escribe nada más en ese turno.
+- **`handoff.resumen`** (opcional) viaja como `summary` y el CRM lo deja como
+  nota interna.
+- **Horario humano**: con `humanAvailable: false` el prompt dice que no hay
+  personas ahora (y cuándo vuelven) para no prometer un asesor.
+- Dorados: los B0, 071 y 072 no se regeneran; `DELTAS_073` declara las tres
+  líneas que cambian (nombre, ficha, anuncio).
+
 ### Cero silencios y cero apagones (vocero-crm 073-A)
 
 - **Nunca silencio negro.** Al agotar las rondas de herramientas Nea pide UNA

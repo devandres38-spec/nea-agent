@@ -372,15 +372,17 @@ class CrmClient:
         data: dict[str, Any] = resp.json()
         return data
 
-    async def post_handoff(self, conversation_id: str, reason: str | None = None) -> None:
-        resp = await self._request(
-            "POST",
-            "/api/bot/handoff",
-            json={
-                "conversationId": conversation_id,
-                "reason": canonical_handoff_reason(reason),
-            },
-        )
+    async def post_handoff(
+        self, conversation_id: str, reason: str | None = None, *, summary: str | None = None
+    ) -> None:
+        cuerpo: dict[str, Any] = {
+            "conversationId": conversation_id,
+            "reason": canonical_handoff_reason(reason),
+        }
+        # vocero-crm 073-B (D2): aditivo; el CRM lo guarda como nota interna.
+        if summary:
+            cuerpo["summary"] = summary[:500]
+        resp = await self._request("POST", "/api/bot/handoff", json=cuerpo)
         if resp.status_code != 200:
             raise CrmError(f"handoff devolvió {resp.status_code}")
 

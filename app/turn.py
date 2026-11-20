@@ -24,6 +24,8 @@ from app.efectos import marcar_efecto
 from app.formato import formatear_para
 from app.herramientas.dinamicas import registro_del_turno, sabe_llamar_herramientas, tiene_dinamicas
 from app.hostility import ALERT as HOSTILITY_ALERT, hostile_streak
+from app.datos import neutralizar_marcadores
+from app.tramo_humano import con_tramo_humano
 from app.llm import ImagenNoSoportada, LlmExhausted
 from app.stall import (
     ALERTA as STALL_ALERT,
@@ -376,7 +378,9 @@ async def run_turn(
     image_uris: list[str] = []
     for m in inbound:
         if m.text:
-            parts.append(m.text)
+            # 073-B (D4): un corchete abre SOLO marcadores del sistema; el
+            # lead no puede escribir uno (app/datos.py).
+            parts.append(neutralizar_marcadores(m.text))
             continue
         if m.type in ("text", "button", "interactive"):
             continue  # texto vacío raro: nada que procesar
@@ -442,6 +446,9 @@ async def run_turn(
     messages: list[dict[str, Any]] = [{"role": "system", "content": system}] + [
         {"role": m.role, "content": m.content} for m in history
     ]
+    # 073-B (D1): lo que pasó mientras atendía una persona, UNA vez (el CRM
+    # deja de mandarlo cuando la IA vuelve a contestar). No va al historial.
+    con_tramo_humano(messages, context)
     # Hostilidad sostenida (AC-18): el CONTEO es determinista — el LLM salió
     # flaky contando entre turnos. Al tercer strike: alerta en el turno y
     # handoff garantizado más abajo aunque el modelo no llame la herramienta.
@@ -522,6 +529,13 @@ async def run_turn(
         )
         return
 
+    # 073-B (D6, Ley 1581): el lead pidió la baja. El CRM le manda la
+    # confirmación fija al registrar el handoff `opt_out`; lo que el modelo
+    # haya escrito no sale (sería un mensaje más a quien pidió no recibirlos).
+    if runtime.baja:
+        logger.info("turno %s: el lead pidió la baja — sin respuesta del modelo", identity)
+        final_text = None
+
     # Última red antes de enviar: el modelo repitió un mensaje que el lead ya
     # tiene, o escribió una nota para sí mismo. Se le pide UNA vez más; si
     # vuelve a salir mal, silencio + handoff error, igual que un LLM caído.
@@ -580,7 +594,9 @@ async def run_turn(
     # El handoff se ejecuta DESPUÉS de la despedida (si no, el CRM la rechaza
     # con 409 ai_paused).
     if runtime.handoff_reason is not None:
-        await _safe_handoff(ctx, str(crm_conv_id), runtime.handoff_reason, turno, conv.id)
+        await _safe_handoff(
+            ctx, str(crm_conv_id), runtime.handoff_reason, turno, conv.id, resumen=runtime.handoff_summary
+        )
 
     # --- Fase + seguimiento -----------------------------------------------
     updates: dict[str, Any] = {"greeted": True}
@@ -990,8 +1006,14 @@ async def _safe_handoff(
     reason: str,
     turno: _Turno | None = None,
     conv_id: int | None = None,
+    *,
+    resumen: str | None = None,
 ) -> None:
     """Le pasa la conversación a una persona. Nunca lanza.
+
+    073-B (D2) — `resumen`: lo que el agente le deja al equipo (≤500); el CRM
+    lo guarda como nota interna. Se manda solo si hay uno (un CRM anterior
+    ignora el campo; uno que no lo acepte nunca lo recibe vacío).
 
     073-A (D2) — Antes, si el CRM no contestaba, el handoff se perdía: el
     lead ya tenía la despedida y nadie se enteraba. Ahora se reintenta en el
@@ -1001,7 +1023,10 @@ async def _safe_handoff(
     await marcar_efecto()
     for intento in range(HANDOFF_ATTEMPTS):
         try:
-            await ctx.crm.post_handoff(crm_conv_id, reason)
+            if resumen:
+                await ctx.crm.post_handoff(crm_conv_id, reason, summary=resumen[:500])
+            else:
+                await ctx.crm.post_handoff(crm_conv_id, reason)
             logger.info("handoff registrado en el CRM (reason=%s)", reason)
             break
         except CrmRechazo as exc:
