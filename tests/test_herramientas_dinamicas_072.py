@@ -22,7 +22,7 @@ import httpx
 import pytest
 
 from app.crm import CrmClient, CrmRechazo
-from app.crm_brains import TIMEOUT_HERRAMIENTA_S, BrainsCrmClient
+from app.crm_brains import NOTA_EN_CURSO, NOTA_ENVIADO, TIMEOUT_HERRAMIENTA_S, BrainsCrmClient
 from app.ensayo import CrmDeEnsayo
 from app.herramientas.builtin import REGISTRO
 from app.herramientas.dinamicas import (
@@ -296,11 +296,66 @@ async def test_call_tool_200_devuelve_el_cuerpo_y_manda_el_despacho(respx_mock):
     await c.aclose()
 
 
-async def test_call_tool_sin_despacho_usa_un_id_propio(respx_mock):
+async def test_call_tool_sin_despacho_no_llama_al_crm(respx_mock):
+    """Auditoría 072-B (A-1): el CRM exige un despacho real; sin uno, ni se intenta."""
     ruta = respx_mock.post(f"{CRM_URL}/api/brains/tools/diagnostico_eco").mock(return_value=httpx.Response(200, json={"ok": True}))
     c = BrainsCrmClient(CRM_URL, "secreto", "org_1")
-    await c.call_tool("cv_1", "diagnostico_eco", {})
-    assert json.loads(ruta.calls[0].request.content)["dispatchId"].startswith("nea-")
+    r = await c.call_tool("cv_1", "diagnostico_eco", {})
+    assert r["ok"] is False and r["error"] == "herramienta_no_disponible"
+    assert not ruta.called
+    await c.aclose()
+
+
+@pytest.mark.parametrize(
+    "status,codigo,esperado",
+    [
+        (422, "despacho_desconocido", {"ok": False, "error": "herramienta_no_disponible", "detalle": "despacho_desconocido"}),
+        (409, "cerebro_reasignado", {"ok": False, "error": "cerebro_reasignado"}),
+        (409, "ai_paused", {"ok": False, "error": "ai_paused"}),
+    ],
+)
+async def test_call_tool_mapea_los_codigos_del_despacho(respx_mock, status, codigo, esperado):
+    respx_mock.post(f"{CRM_URL}/api/brains/tools/diagnostico_eco").mock(
+        return_value=httpx.Response(status, json={"error": {"code": codigo, "message": "m"}})
+    )
+    c = _cliente()
+    assert await c.call_tool("cv_1", "diagnostico_eco", {}) == esperado
+    await c.aclose()
+
+
+async def test_m3_un_200_de_mas_de_4_kb_no_llega_al_modelo(respx_mock, caplog):
+    respx_mock.post(f"{CRM_URL}/api/brains/tools/diagnostico_eco").mock(
+        return_value=httpx.Response(200, json={"ok": True, "result": {"x": "y" * 5000}, "estado": "hecho"})
+    )
+    c = _cliente()
+    with caplog.at_level(logging.WARNING, logger="nea.crm.brains"):
+        r = await c.call_tool("cv_1", "diagnostico_eco", {})
+    assert r["ok"] is False and r["error"] == "resultado_grande"
+    assert "no repitas" in r["detalle"]
+    assert "bytes" in caplog.text
+    await c.aclose()
+
+
+@pytest.mark.parametrize(
+    "cuerpo,nota",
+    [
+        ({"ok": True, "result": {}, "estado": "en_curso"}, NOTA_EN_CURSO),
+        ({"ok": True, "result": {"enviadoAlCliente": True}, "estado": "hecho"}, NOTA_ENVIADO),
+        ({"ok": True, "result": {"enviadoAlCliente": True}, "estado": "en_curso"}, f"{NOTA_EN_CURSO}; {NOTA_ENVIADO}"),
+    ],
+)
+async def test_m3_guia_para_en_curso_y_enviado_al_cliente(respx_mock, cuerpo, nota):
+    respx_mock.post(f"{CRM_URL}/api/brains/tools/diagnostico_eco").mock(return_value=httpx.Response(200, json=cuerpo))
+    c = _cliente()
+    assert await c.call_tool("cv_1", "diagnostico_eco", {}) == {**cuerpo, "nota": nota}
+    await c.aclose()
+
+
+async def test_m3_un_resultado_normal_no_lleva_nota(respx_mock):
+    cuerpo = {"ok": True, "result": {"enviadoAlCliente": False}, "estado": "hecho"}
+    respx_mock.post(f"{CRM_URL}/api/brains/tools/diagnostico_eco").mock(return_value=httpx.Response(200, json=cuerpo))
+    c = _cliente()
+    assert await c.call_tool("cv_1", "diagnostico_eco", {}) == cuerpo
     await c.aclose()
 
 

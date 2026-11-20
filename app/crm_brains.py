@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import uuid
 from typing import Any
 
 import httpx
@@ -45,6 +44,30 @@ logger = logging.getLogger("nea.crm.brains")
 # vocero-crm 072-B — El CRM corta la herramienta a los 8 s (504); Nea espera
 # un poco más para recibir ese 504 en vez de cortar ella primero.
 TIMEOUT_HERRAMIENTA_S = 10.0
+# Contrato brains-072 §4: el resultado de una herramienta no pasa de 4 KB.
+TOPE_RESULTADO_BYTES = 4096
+
+NOTA_EN_CURSO = (
+    "sigue en proceso en el CRM: no la vuelvas a llamar en este turno; si hace "
+    "falta, dile al cliente que quedó en proceso"
+)
+NOTA_ENVIADO = "el CRM ya le envió esto al cliente: no se lo repitas"
+
+
+def _con_guia(data: dict[str, Any]) -> dict[str, Any]:
+    """M-3 (auditoría 072-B) — Una pista breve para el modelo, sin tocar el resto.
+
+    `estado: "en_curso"`: el trabajo sigue; reintentar en bucle solo gasta
+    rondas. `result.enviadoAlCliente`: el CRM ya le escribió al cliente, y
+    repetirlo es contestarle dos veces.
+    """
+    notas = []
+    if data.get("estado") == "en_curso":
+        notas.append(NOTA_EN_CURSO)
+    result = data.get("result")
+    if isinstance(result, dict) and result.get("enviadoAlCliente") is True:
+        notas.append(NOTA_ENVIADO)
+    return {**data, "nota": "; ".join(notas)} if notas else data
 
 
 def _json_o_none(resp: httpx.Response) -> Any:
@@ -197,12 +220,23 @@ class BrainsCrmClient(CrmClient):
         despacho (el seguimiento), un id propio por llamada.
 
         Lo que vuelve es lo que ve el modelo (contrato brains-072 §4):
-        200 → el cuerpo tal cual; 404 → `herramienta_no_disponible`; 409 →
-        `ai_paused`; 413/422 → `argumentos_invalidos` (+ detalle); 5xx, 504
-        o 10 s sin respuesta → `crm_error`. 401/403 → `CrmRechazo` (terminal,
-        lo lanza `_request`): no se le devuelve al modelo.
+        200 → el cuerpo (con una `nota` si sigue en curso o el CRM ya le
+        escribió al cliente; `resultado_grande` si pasa de 4 KB); 404 y 422
+        `despacho_desconocido` → `herramienta_no_disponible`; 409 → su código
+        (`ai_paused` o `cerebro_reasignado`); 413/422 → `argumentos_invalidos`
+        (+ detalle); 5xx, 504 o 10 s sin respuesta → `crm_error`. 401/403 →
+        `CrmRechazo` (terminal, lo lanza `_request`): no llega al modelo.
+
+        Auditoría 072-B (A-1): el CRM exige un despacho de verdad. Sin uno
+        (un turno que no vino de un despacho) no se llama.
         """
-        despacho = self.despacho_de(conversation_id) or f"nea-{uuid.uuid4().hex}"
+        despacho = self.despacho_de(conversation_id)
+        if not despacho:
+            return {
+                "ok": False,
+                "error": "herramienta_no_disponible",
+                "detalle": "esta acción solo existe respondiendo un mensaje del cliente",
+            }
         try:
             resp = await self._request(
                 "POST",
@@ -216,14 +250,26 @@ class BrainsCrmClient(CrmClient):
             logger.warning("herramienta %s: el CRM no contestó (%s)", name, exc)
             return {"ok": False, "error": "crm_error", "detalle": "no se pudo completar; sigue sin ella o haz handoff"}
         if resp.status_code == 200:
+            # M-3 (auditoría 072-B) — Defensa en profundidad: el CRM ya corta a
+            # 4 KB, pero lo que entra al contexto del modelo se mide aquí.
+            if len(resp.content) > TOPE_RESULTADO_BYTES:
+                logger.warning("herramienta %s: resultado de %d bytes — no se le pasa al modelo", name, len(resp.content))
+                return {
+                    "ok": False,
+                    "error": "resultado_grande",
+                    "detalle": "el resultado no cabe; no repitas esta llamada con los mismos argumentos",
+                }
             data = _json_o_none(resp)
             if isinstance(data, dict):
-                return data
+                return _con_guia(data)
             return {"ok": False, "error": "crm_error", "detalle": "respuesta ilegible"}
         if resp.status_code == 404:
             return {"ok": False, "error": "herramienta_no_disponible"}
         if resp.status_code == 409:
-            return {"ok": False, "error": "ai_paused"}
+            codigo = _conflict_code(resp)
+            return {"ok": False, "error": codigo if codigo == "cerebro_reasignado" else "ai_paused"}
+        if resp.status_code == 422 and _conflict_code(resp) == "despacho_desconocido":
+            return {"ok": False, "error": "herramienta_no_disponible", "detalle": "despacho_desconocido"}
         if resp.status_code in (413, 422):
             cuerpo = _json_o_none(resp)
             error = cuerpo.get("error") if isinstance(cuerpo, dict) else None
