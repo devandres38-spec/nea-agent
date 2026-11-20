@@ -37,7 +37,7 @@ from app.stall import (
 from app.profile import resolve_profile
 from app.prompt import build_system_prompt, zona_del_negocio
 from app.roles import rol_de
-from app.state import KIND_HANDOFF, AppContext, BotMessage, InboundMessage, utcnow
+from app.state import KIND_HANDOFF, AppContext, BotMessage, InboundMessage, contenido_de_handoff, utcnow
 from app.tools import (
     ToolRuntime,
     etapas_siguientes,
@@ -888,6 +888,8 @@ async def _tool_loop(
     pregunta. Sin él a la vista, el modelo escribe la respuesta completa ya
     con el resultado de la herramienta, que es lo que siempre hizo bien.
     """
+    if getattr(runtime, "baja", False):
+        return None
     if not herramientas:
         return (await ctx.llm.complete(messages, tools=None)).content
     for _ in range(MAX_TOOL_ROUNDS):
@@ -940,6 +942,12 @@ async def _tool_loop(
                     "content": json.dumps(result, ensure_ascii=False, default=str),
                 }
             )
+            # Auditoría 073-B (CRÍTICO): el lead pidió la baja. Ni una
+            # herramienta más del lote ni otra vuelta al modelo: cualquier
+            # cosa que hiciera ahora sería escribirle o actuar sobre quien
+            # pidió no recibir nada (Ley 1581). El CRM confirma.
+            if getattr(runtime, "baja", False):
+                return None
     logger.warning("turno: demasiadas rondas de herramientas — pido la respuesta sin ellas")
     messages.append({"role": "system", "content": CIERRA_SIN_HERRAMIENTAS})
     return (await ctx.llm.complete(messages, tools=None)).content
@@ -1044,7 +1052,14 @@ async def _safe_handoff(
         org_id, org_slug = ctx.organizacion or ("", "")
         try:
             pendiente = await ctx.store.enqueue_pending_send(
-                conv_id, crm_conv_id, reason, org_id, org_slug, "", kind=KIND_HANDOFF
+                conv_id,
+                crm_conv_id,
+                # Auditoría 073-B: el resumen no se pierde en la cola.
+                contenido_de_handoff(reason, resumen),
+                org_id,
+                org_slug,
+                "",
+                kind=KIND_HANDOFF,
             )
         except Exception as exc:
             logger.error("no pude encolar el handoff (%s): %s", reason, exc)

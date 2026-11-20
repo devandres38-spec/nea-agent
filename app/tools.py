@@ -1174,6 +1174,10 @@ class ToolRuntime:
         return out
 
     def _handoff(self, args: dict[str, Any]) -> dict[str, Any]:
+        # Auditoría 073-B (CRÍTICO): una baja ya pedida no se convierte en
+        # otro motivo (el CRM solo registra la baja con `opt_out`).
+        if self.baja:
+            return {"ok": True, "nota": "la baja ya quedó registrada; no escribas nada"}
         self.handoff_reason = str(args.get("reason") or "lead_request")
         resumen = " ".join(str(args.get("resumen") or "").split())[:500]
         self.handoff_summary = resumen or None

@@ -23,7 +23,7 @@ from datetime import datetime, timedelta
 from app.crm import CrmConflict, CrmError, CrmRechazo, envio_terminal
 from app.multiorg import contexto_del_turno, ctx_de_organizacion
 from app.observabilidad import contexto_de_log
-from app.state import KIND_HANDOFF, AppContext, PendingSend, utcnow
+from app.state import KIND_HANDOFF, AppContext, PendingSend, leer_handoff, utcnow
 
 logger = logging.getLogger("nea.sender")
 
@@ -178,8 +178,12 @@ class SenderWorker:
         self, ctx: AppContext, item: PendingSend, now: datetime
     ) -> None:
         """073-A (D2) — Un handoff que el turno no pudo registrar."""
+        reason, summary = leer_handoff(item.content)
         try:
-            await ctx.crm.post_handoff(item.crm_conversation_id, item.content or "error")
+            if summary:
+                await ctx.crm.post_handoff(item.crm_conversation_id, reason, summary=summary)
+            else:
+                await ctx.crm.post_handoff(item.crm_conversation_id, reason)
         except CrmRechazo as exc:
             logger.warning("sender: sin credencial para el handoff pendiente %d (%s) — abandonado", item.id, exc.status)
             await ctx.store.mark_pending_send_abandoned(item.id)
@@ -188,7 +192,7 @@ class SenderWorker:
             await self._reprogramar(ctx, item, now, exc)
             return
         await ctx.store.mark_pending_send_delivered(item.id)
-        logger.info("sender: handoff pendiente %d registrado (%s)", item.id, item.content)
+        logger.info("sender: handoff pendiente %d registrado (%s)", item.id, reason)
 
     async def _reprogramar(
         self, ctx: AppContext, item: PendingSend, now: datetime, exc: Exception

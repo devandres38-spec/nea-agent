@@ -20,7 +20,7 @@ from pathlib import Path
 from dataclasses import dataclass
 
 from app.crm import CrmRechazo
-from app.datos import dato_no_confiable, neutralizar_marcadores
+from app.datos import dato_no_confiable, entre_comillas, neutralizar_marcadores
 from app.state import AppContext, InboundMessage
 
 logger = logging.getLogger("nea.media")
@@ -60,7 +60,7 @@ class MediaPart:
 def _caption_line(msg: InboundMessage, junto_a: str) -> str:
     if msg.media_caption:
         # 073-B (D4): el pie lo escribió el lead — una línea, sin corchetes.
-        return f' Nota del lead junto a {junto_a}: "{dato_no_confiable(msg.media_caption, 500)}".'
+        return f" Nota del lead junto a {junto_a}: {entre_comillas(msg.media_caption, 500)}."
     return ""
 
 

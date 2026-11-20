@@ -7,6 +7,7 @@ asyncpg vive en `app/db.py` (`PgStore`).
 from __future__ import annotations
 
 import asyncio
+import json
 import itertools
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -96,6 +97,32 @@ class OfferedSlot:
 # motivo). Ver migrations/010_reanudacion.sql.
 KIND_MESSAGE = "message"
 KIND_HANDOFF = "handoff"
+
+
+def contenido_de_handoff(reason: str, summary: str | None = None) -> str:
+    """Auditoría 073-B — Lo que guarda `pending_send.content` de un handoff.
+
+    Sin resumen, el motivo a secas (lo de siempre: las filas viejas se leen
+    igual). Con resumen, un JSON `{"reason", "summary"}` para no perderlo
+    si el handoff cae a la cola.
+    """
+    if not summary:
+        return reason
+    return json.dumps({"reason": reason, "summary": summary[:500]}, ensure_ascii=False)
+
+
+def leer_handoff(content: str | None) -> tuple[str, str | None]:
+    """El inverso de `contenido_de_handoff`; texto plano = solo el motivo."""
+    texto = (content or "").strip()
+    if texto.startswith("{"):
+        try:
+            datos = json.loads(texto)
+        except ValueError:
+            datos = None
+        if isinstance(datos, dict) and isinstance(datos.get("reason"), str):
+            resumen = datos.get("summary")
+            return datos["reason"] or "error", resumen if isinstance(resumen, str) and resumen else None
+    return texto or "error", None
 
 
 @dataclass
