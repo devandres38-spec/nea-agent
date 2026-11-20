@@ -31,6 +31,8 @@ _NOMBRA_UN_DIA = re.compile(
     r"\b(?:"
     rf"{_DIAS}|{_MESES}"
     r"|hoy|pasado manana|semana|finde|quincena"
+    # 073-C (D7) — Colombia: «el festivo», «el puente», «de hoy en ocho».
+    r"|festivo|puente|de hoy en ocho|de manana en ocho|en ocho dias"
     # Pedir OTRO día también es nombrar uno: el modelo elige cuál consultar.
     r"|otro dia|otra fecha|otros dias|mas adelante|despues"
     r"|siguiente|proxim[oa]s?"

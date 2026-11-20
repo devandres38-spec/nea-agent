@@ -40,7 +40,7 @@ from app.prompt import LINEA_HERRAMIENTAS_PROPIAS, build_system_prompt
 from app.tools import ToolRuntime, solo_encendidas, tool_schemas
 from app.turn import _tool_loop
 from tests.conftest import CRM_URL, FakeLLM, IDENTITY, make_ctx
-from tests.test_chasis_dorado import AHORA, BOGOTA, CASOS, DORADOS
+from tests.test_chasis_dorado import AHORA, BOGOTA, CASOS, DORADOS, aplicar_deltas_073
 
 NATIVAS = list(REGISTRO.nombres())
 
@@ -172,7 +172,7 @@ def test_clave_de_un_nombre_desconocido_ya_no_es_escalar():
     falso = {"type": "function", "function": {"name": "inventada", "parameters": {"type": "object"}}}
     perfil = BusinessProfile(tools=frozenset({"escalar"}))
     assert solo_encendidas([falso, *tool_schemas(False)], perfil) == [
-        s for s in tool_schemas(False) if s["function"]["name"] == "handoff"
+        s for s in tool_schemas(False) if s["function"]["name"] in ("handoff", "solicitar_baja")
     ]
 
 
@@ -180,7 +180,7 @@ def test_las_de_modulo_no_dependen_del_catalogo_del_dueno():
     reg = registro_del_turno(_ctx(_tool()), puede_ejecutar=True)
     perfil = BusinessProfile(tools=frozenset({"escalar"}))  # sin ficha, sin agenda
     ofrecidas = solo_encendidas(tool_schemas(False, registro=reg), perfil, reg)
-    assert [s["function"]["name"] for s in ofrecidas] == ["handoff", "diagnostico_eco"]
+    assert [s["function"]["name"] for s in ofrecidas] == ["handoff", "solicitar_baja", "diagnostico_eco"]
     # Con el registro global, la de módulo no existe para el filtro.
     assert "diagnostico_eco" not in [
         s["function"]["name"] for s in solo_encendidas(tool_schemas(False, registro=reg), perfil)
@@ -436,7 +436,8 @@ def test_dorado_cloud_con_herramientas():
     archivo = DORADOS / "072b_cloud_con_herramientas.txt"
     if os.environ.get("NEA_ACTUALIZAR_DORADOS") == "1":
         archivo.write_bytes(prompt.encode("utf-8"))
-    assert prompt == archivo.read_bytes().decode("utf-8")
+    # 073-B: los dorados no se regeneran; se les aplican los DELTAS_073.
+    assert prompt == aplicar_deltas_073(archivo.read_bytes().decode("utf-8"))
 
 
 def test_el_perfil_por_defecto_no_cambia_por_las_herramientas():

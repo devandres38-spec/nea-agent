@@ -56,7 +56,15 @@ _INGLES = {
 _INGLES_RE = re.compile(r"\b(" + "|".join(_INGLES) + r")\b")
 
 _SUFIJO = r"am|pm|de la manana|de la tarde|de la noche|del mediodia"
-_URL = re.compile(r"https?://\S+")
+# 073-C (D7): la puntuación que cierra la oración («…/j/123.») no es parte del
+# enlace; con ella, el enlace correcto parecía OTRO y salía la plantilla.
+_URL = re.compile(r"https?://[^\s<>\"']*[^\s<>\"'.,;:!?¡¿)\]}»]")
+# 073-C (D7): lo que una cita presencial necesita y la plantilla no traía.
+_MAPS = re.compile(r"(maps\.google\.|google\.[a-z.]+/maps|goo\.gl/maps|maps\.app\.goo\.gl)", re.I)
+_DIRECCION = re.compile(
+    r"\b(direcci[oó]n|cra\.?|carrera|calle|cl\.?|av\.?|avenida|diagonal|dg\.?|transversal|tv\.?|kr\.?)\s*\d",
+    re.I,
+)
 _HORA_HM = re.compile(r"(?<![\d:.])(\d{1,2})\s*:\s*(\d{2})(?!\d)(?:\s*(" + _SUFIJO + r")\b)?")
 _HORA_SOLA = re.compile(r"(?<![\d:.])(\d{1,2})\s*(" + _SUFIJO + r")\b")
 _DIA_DE_MES = re.compile(r"(?<![\d:.$])(\d{1,2})\s+de\s+(" + "|".join(MESES) + r")\b")
@@ -251,11 +259,14 @@ def _menciona_la_hora(cita: Cita, t: str) -> bool:
         return True
     if cita.minuto == 0 and re.search(rf"\ba las {h12}\b(?![:.\d])", t):
         return True
+    # 073-C (D7): «a la 1» / «a la una» (singular).
+    if cita.minuto == 0 and h12 == 1 and re.search(r"\ba la (?:1|una)\b(?![:\d]|\.\d)", t):
+        return True
     return False
 
 
 _VERBOS_DE_CITA = re.compile(
-    r"\b(agend|reserv|apart|confirm|qued|te espero|le espero|los espero|esperamos|nos vemos|movi|cambi|program)"
+    r"\b(agend|reserv|apart|separ|confirm|qued|te espero|le espero|los espero|esperamos|nos vemos|movi|cambi|program|reprogram)"
 )
 
 
@@ -383,11 +394,31 @@ def _decidir(texto: str, datos: dict[str, Any]) -> tuple[str, list[str]]:
     return ("pie" if falta else "ok"), falta
 
 
+def _lo_presencial(texto: str, datos: dict[str, Any]) -> list[str]:
+    """073-C (D7): el enlace de Maps y la línea de la dirección que el modelo
+    escribió. Al caer en la plantilla se perdían: el lead quedaba con la hora
+    y sin saber A DÓNDE ir."""
+    if datos.get("meeting_url"):
+        return []
+    extra: list[str] = []
+    for url in _URL.findall(texto or ""):
+        if _MAPS.search(url) and f"📍 {url}" not in extra:
+            extra.append(f"📍 {url}")
+    for linea in (texto or "").splitlines():
+        limpia = linea.strip()
+        if _DIRECCION.search(limpia) and not _URL.search(limpia) and len(limpia) <= 200:
+            extra.append(limpia)
+            break
+    return extra
+
+
 def confirmar(texto: str, datos: dict[str, Any], trato: str | None = "tu") -> str:
     """El mensaje que sale tras reservar o mover una cita."""
     salida, falta = _decidir(texto, datos)
     if salida == "contradiccion":
-        return plantilla(datos, trato)
+        presencial = _lo_presencial(texto, datos)
+        base = plantilla(datos, trato)
+        return base + ("\n\n" + "\n".join(presencial) if presencial else "")
     if salida == "ok":
         return texto
     x = _textos(trato)

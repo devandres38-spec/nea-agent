@@ -98,6 +98,9 @@ def mensajes_del_despacho(payload: dict[str, Any]) -> list[InboundMessage]:
                 media_voice=isinstance(mime, str) and mime.startswith("audio/ogg"),
                 location=_ubicacion(m.get("location")),
                 contact_names=_nombres(m.get("contacts")),
+                # 073-C (D5): aditivos del CRM; un CRM anterior no los manda.
+                contact_phones=_telefonos(m.get("contacts")),
+                reply_to=_cita(m.get("replyTo")),
                 channel=str(canal) if canal else None,
                 prueba=prueba,
             )
@@ -112,6 +115,30 @@ def _ubicacion(valor: Any) -> dict[str, Any] | None:
     if not all(isinstance(valor.get(k), (int, float)) for k in ("latitude", "longitude")):
         return None
     return {k: valor[k] for k in ("latitude", "longitude", "name", "address") if valor.get(k) is not None}
+
+
+def _telefonos(valor: Any) -> list[str]:
+    """073-C (D5): los teléfonos de las tarjetas (`contacts[].phones`)."""
+    if not isinstance(valor, list):
+        return []
+    out: list[str] = []
+    for t in valor:
+        if isinstance(t, dict) and isinstance(t.get("phones"), list):
+            out.extend(str(p) for p in t["phones"][:3] if isinstance(p, str) and p.strip())
+    return out[:10]
+
+
+def _cita(valor: Any) -> dict[str, Any] | None:
+    """073-C (D5): el mensaje que el lead citó (`replyTo`), si vino."""
+    if not isinstance(valor, dict):
+        return None
+    texto = valor.get("text")
+    autor = valor.get("author")
+    return {
+        "author": autor if autor in ("lead", "negocio") else "negocio",
+        "type": str(valor.get("type") or "text"),
+        "text": texto if isinstance(texto, str) else None,
+    }
 
 
 def _nombres(valor: Any) -> list[str]:
@@ -242,7 +269,13 @@ async def olvidar(ctx: AppContext, payload: dict[str, Any]) -> None:
     )
 
 
-async def _procesar(ctx: AppContext, payload: dict[str, Any], *, durable: bool = False) -> None:
+async def _procesar(
+    ctx: AppContext,
+    payload: dict[str, Any],
+    *,
+    durable: bool = False,
+    reanudacion: bool = False,
+) -> None:
     dispatch_id = str(payload.get("dispatchId") or "")
     conversation = payload.get("conversation") or {}
     conversation_id = str(conversation.get("id") or "")
@@ -268,7 +301,10 @@ async def _procesar(ctx: AppContext, payload: dict[str, Any], *, durable: bool =
     # historial (`_anotar_leidos`); aquí solo se consulta.
     org = organizacion_del_despacho(payload) if ctx.settings.multi_org else None
     org_id = org[0] if org else ""
-    leidos = await ctx.store.already_processed(
+    # 073-A (D3): al reanudar un turno interrumpido, sus mensajes ya quedaron
+    # «leídos» (el turno los anotó antes de pensar). Filtrarlos dejaría el
+    # turno sin nada que contestar: la reanudación los vuelve a tomar todos.
+    leidos = set() if reanudacion else await ctx.store.already_processed(
         [marca_de_leido(org_id, m.wa_message_id) for m in mensajes if m.wa_message_id]
     )
     if leidos:
@@ -318,7 +354,7 @@ async def _procesar(ctx: AppContext, payload: dict[str, Any], *, durable: bool =
     # sepa a quién pasársela si revienta antes de leer el contexto.
     await handle_flush(
         ctx_turno, identity, mensajes, crm_conversation_id=conversation_id,
-        propagate_errors=durable,
+        propagate_errors=durable, reanudacion=reanudacion,
     )
 
 

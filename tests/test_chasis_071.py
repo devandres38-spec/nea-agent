@@ -73,7 +73,7 @@ def test_un_rol_nuevo_es_una_entrada(monkeypatch):
     assert "orientar a cada persona hacia el producto que le sirve" in texto
     assert "calificarla según las instrucciones del negocio" not in texto
     # Herramientas efectivas = rol ∩ perfil ∩ capacidades (D20).
-    assert _nombres(solo_encendidas(tool_schemas(True), perfil)) == ["update_ficha", "handoff"]
+    assert _nombres(solo_encendidas(tool_schemas(True), perfil)) == ["update_ficha", "handoff", "solicitar_baja"]
 
 
 # ─────────────────────────────────── línea de cancelar (capacidad, D14) ───
@@ -95,9 +95,9 @@ def test_la_linea_de_cancelar_depende_de_lo_que_el_crm_sabe_hacer():
 
 def test_el_catalogo_sale_del_registro_en_el_orden_de_siempre():
     assert _nombres(tool_schemas(True)) == [
-        "update_ficha", "propose_slots", "book_session", "reschedule_session", "route_out", "handoff",
+        "update_ficha", "propose_slots", "book_session", "reschedule_session", "route_out", "handoff", "solicitar_baja",
     ]
-    assert _nombres(tool_schemas(False)) == ["update_ficha", "route_out", "handoff"]
+    assert _nombres(tool_schemas(False)) == ["update_ficha", "route_out", "handoff", "solicitar_baja"]
     assert _nombres(tool_schemas(True, agenda_v2=True, coordination=True))[-3:] == [
         "list_bookings", "cancel_session", "coordination_consent",
     ]

@@ -113,7 +113,7 @@ async def test_slot_no_ofrecido_sin_alternativas_manda_a_re_ofrecer(
             409, json={"error": {"code": "slot_not_offered"}, "slots": []}
         )
     )
-    result = await runtime.execute("book_session", {"start_utc": SLOT_ISO})
+    result = await runtime.execute("book_session", {"start_utc": SLOT_ISO, "dia_confirmado": "sí, el lunes"})
     assert result["ok"] is False
     assert "propose_slots" in result["detalle"]
     assert await ctx.store.get_offered_slots(conv.id) == []
@@ -166,7 +166,7 @@ async def test_el_enlace_de_la_reunion_llega_aunque_no_sea_zoom(
             },
         )
     )
-    result = await runtime.execute("book_session", {"start_utc": SLOT_ISO})
+    result = await runtime.execute("book_session", {"start_utc": SLOT_ISO, "dia_confirmado": "sí, el lunes"})
     assert result["ok"] is True
     assert result["meeting_url"] == "https://meet.google.com/abc"
     assert result["enlace_pendiente"] is False
@@ -185,7 +185,7 @@ async def test_enlace_pendiente_no_se_promete(runtime_y_ctx, respx_mock):
             json={"bookingId": "bk_1", "meetingLink": None, "linkPending": True},
         )
     )
-    result = await runtime.execute("book_session", {"start_utc": SLOT_ISO})
+    result = await runtime.execute("book_session", {"start_utc": SLOT_ISO, "dia_confirmado": "sí, el lunes"})
     assert result["ok"] is True
     assert result["meeting_url"] is None
     assert result["enlace_pendiente"] is True
@@ -203,7 +203,7 @@ async def test_zoom_join_url_sigue_sirviendo(runtime_y_ctx, respx_mock):
             201, json={"bookingId": "bk_1", "zoomJoinUrl": "https://zoom.us/j/1"}
         )
     )
-    result = await runtime.execute("book_session", {"start_utc": SLOT_ISO})
+    result = await runtime.execute("book_session", {"start_utc": SLOT_ISO, "dia_confirmado": "sí, el lunes"})
     assert result["meeting_url"] == "https://zoom.us/j/1"
 
 

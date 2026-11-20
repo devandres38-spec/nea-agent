@@ -179,11 +179,33 @@ class Settings(BaseSettings):
     # razonamiento en "minimal") y una llamada que choca con él
     # (`finish_reason=length`) no se manda cortada: se repite UNA vez con el
     # doble (ver `OpenAiLlm.complete`). Bajarlo de ~1500 reabre el problema.
+    # 073-A (D2) — `temperature` por defecto de cada llamada de chat. Sin
+    # fijarla el proveedor usa 1.0. La fija la plataforma (decisión #10);
+    # el perfil del negocio la puede traer (`llm.temperature`).
+    llm_temperature: float = Field(
+        default=0.4, ge=0, le=2, validation_alias=AliasChoices("LLM_TEMPERATURE")
+    )
+
+    # 073-A (D3) — Cuántos minutos vive una respuesta que no salió en el
+    # turno (`pending_send`). Pasado eso se abandona y la conversación pasa a
+    # una persona: entregada horas después ya no responde a nada.
+    pending_send_max_minutes: float = Field(
+        default=15.0, gt=0, validation_alias=AliasChoices("PENDING_SEND_MAX_MINUTES")
+    )
+
+    # 073-A (D3) — Al apagar (SIGTERM), cuánto se espera a que terminen los
+    # turnos en curso antes de cortarlos. El contenedor necesita un
+    # `stop_grace_period` mayor que esto.
+    nea_shutdown_grace_seconds: float = Field(
+        default=25.0, ge=0, validation_alias=AliasChoices("NEA_SHUTDOWN_GRACE_SECONDS")
+    )
+
     llm_max_tokens: int = Field(
         default=2048, ge=0, validation_alias=AliasChoices("LLM_MAX_TOKENS")
     )
 
-    history_window: int = 10
+    # vocero-crm 073-C (D6): 20 mensajes, con presupuesto (app/memoria.py).
+    history_window: int = 20
 
     # Cada cuántos segundos, como mucho, se le vuelve a preguntar al CRM si
     # agenda (la bandera AGENDA de Vocero). Antes se preguntaba solo al

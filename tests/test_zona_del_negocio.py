@@ -89,7 +89,7 @@ def test_el_prompt_da_la_hora_del_negocio_y_no_otra():
     ahora = datetime(2026, 10, 13, 23, 42, tzinfo=timezone.utc)
     bloque = _bloque(ahora, BOGOTA)
     assert (
-        "Fecha y hora del negocio: martes 13 de octubre de 2026, 18:42 (hora de Colombia)"
+        "Fecha y hora del negocio: martes 13 de octubre de 2026, 6:42 p. m. (hora de Colombia)"
         in bloque
     )
     assert "México" not in bloque

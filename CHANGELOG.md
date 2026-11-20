@@ -6,6 +6,117 @@ Qué cambia en cada versión de Nea y qué hacer al actualizar. Cada tag
 
 ## Sin publicar
 
+### Parche final de la auditoría 073-C
+
+- **El validador ya no confunde preguntas con promesas.** «¿Quieres que te
+  agende el lunes?» (subjuntivo) se leía como «te agendé» al quitar tildes y
+  pedía una corrección: el pretérito ahora exige la tilde y las frases que son
+  pregunta no cuentan. «¿Te paso con un asesor?» y «si quieres, te paso con un
+  asesor» ya no registran handoff; «un asesor te va a escribir/atender» sí.
+- **Una respuesta partida no pierde trozos.** Si un trozo cae a `pending_send`
+  por un fallo transitorio, los que siguen se encolan detrás, en orden; un 409
+  del CRM (pausa, ventana) sigue cortando sin encolar.
+- **Una foto no se descarta por respuesta obsoleta**: la imagen no se vuelve a
+  ver en el turno siguiente.
+- La confirmación presencial ya no repite el mismo enlace de Maps.
+
+### Calidad conversacional, comprobantes y Colombia (vocero-crm 073-C)
+
+- **Comprobantes de pago** (Nequi, Daviplata, Bancolombia, transferencias):
+  nunca se dan por verificados. Si el turno trae una captura o el lead dice
+  que ya pagó, termina en handoff con la nota «Posible comprobante de pago —
+  validar en banco antes de confirmar».
+- **Imágenes**: como mucho 3 por turno, y en el historial la imagen queda en
+  pasado («ya no la tienes a la vista») para que el modelo no invente lo que
+  mostraba en turnos siguientes.
+- **Validador post-turno**: limpia `<think>…</think>` (GLM-5.3-Flash), pide otra
+  respuesta (sin herramientas) si nombra herramientas, deja notas internas o
+  da una cita por agendada sin reservarla; si promete un asesor sin `handoff`,
+  el handoff se registra.
+- **Respuesta obsoleta**: si mientras pensaba llegó otro despacho de la misma
+  conversación y el turno no tuvo efectos, la respuesta se descarta y el
+  siguiente turno contesta una sola vez.
+- **Respuestas largas** se parten por párrafos según el canal (WhatsApp 4096,
+  Messenger 2000, Instagram/TikTok 1000).
+- **Despacho**: lee `replyTo` (el mensaje citado) y los teléfonos de las
+  tarjetas de contacto; las reacciones no abren turno; un adjunto de Zernio
+  con texto ya no salta el procesamiento del adjunto; sin modelo que oiga no
+  se piden notas de voz.
+- **Memoria**: ventana de 20 mensajes (`HISTORY_WINDOW`, antes 10) con
+  presupuesto de caracteres y separador «— N días después —» cuando hay más
+  de 6 h entre mensajes.
+- **Cierre sin rumbo**: sin agenda no corta por cantidad de mensajes; los
+  stickers cuentan como relleno; relleno colombiano (listo, dale, hágale…).
+- **Colombia**: léxico de hostilidad colombiano (sin contar *parce* ni *qué
+  chimba*, ni las preguntas legítimas sobre estafas); chasis sin mexicanismos;
+  hora del negocio en 12 h; `dia_confirmado` tiene que citar lo que dijo el
+  lead; la confirmación conserva el profesional, el enlace de Maps y la
+  dirección, y entiende «a la 1», «separar», «festivo», «puente» y «de hoy
+  en ocho».
+- Dorados: los B0 siguen sin regenerarse; `DELTAS_073` suma el bloque del
+  chasis y la hora en 12 h.
+
+### Humano↔Bot y seguridad (vocero-crm 073-B)
+
+- **Lo que pasó con una persona**: si el contexto trae `humanGap`, Nea lo lee
+  una vez como nota de sistema (antes de lo que el lead acaba de escribir) y
+  no lo guarda en su historial.
+- **Datos de afuera como datos**: nombre del perfil, ficha, titular del
+  anuncio, pies de foto, nombres de archivo, transcripciones y PDF entran
+  enmarcados, en una línea y sin corchetes. El lead ya no puede escribir un
+  marcador `[...]`: sus corchetes llegan como paréntesis.
+- **`solicitar_baja`** (siempre disponible): handoff `opt_out`; el CRM confirma
+  al lead y Nea no escribe nada más en ese turno.
+- **`handoff.resumen`** (opcional) viaja como `summary` y el CRM lo deja como
+  nota interna.
+- **Horario humano**: con `humanAvailable: false` el prompt dice que no hay
+  personas ahora (y cuándo vuelven) para no prometer un asesor.
+- Dorados: los B0, 071 y 072 no se regeneran; `DELTAS_073` declara las tres
+  líneas que cambian (nombre, ficha, anuncio).
+
+### Cero silencios y cero apagones (vocero-crm 073-A)
+
+- **Nunca silencio negro.** Al agotar las rondas de herramientas Nea pide UNA
+  respuesta más, sin herramientas; si ni así hay texto, handoff `error`
+  (antes: silencio y nadie se enteraba). El reintento de una respuesta
+  inválida también va sin herramientas: no repite citas, ficha ni etapa.
+- **Errores del proveedor.** `400/401/402/403/422` se cortan sin reintentar
+  (antes: tres llamadas cobradas por turno). Un 402 —o el `sin_credencial`
+  del CRM— termina en handoff **`sin_saldo`**. `429` y `5xx` reintentan con
+  jitter y respetan `Retry-After` (máx. 10 s).
+- **`LLM_TEMPERATURE`** (default `0.4`); el perfil o la configuración del CRM
+  pueden traer `llm.temperature` por negocio. Un 400 que la nombra la apaga
+  1 h, como los ajustes de velocidad.
+- **Handoff resiliente.** 3 intentos en el turno y, agotados, a la cola
+  durable (`pending_send` de tipo `handoff`, 24 h). Motivos nuevos del
+  catálogo: `sin_saldo`, `opt_out`, `abuso` (los pone el sistema; la
+  herramienta `escalar` no cambia). Un CRM anterior a la 073 los guarda como
+  `modelo`.
+- **Envío.** Un rechazo definitivo del CRM (`400/404/413/422`, incluido el
+  nuevo `422 envio_permanente`) no se reintenta ni se encola: handoff
+  `error`. Una respuesta encolada vive **15 min** (`PENDING_SEND_MAX_MINUTES`),
+  no 24 h: pasado eso se abandona con handoff, nunca se entrega obsoleta.
+- **Redeploys sin apagones.** Al recibir SIGTERM Nea deja de reclamar
+  despachos y espera los turnos en curso (`NEA_SHUTDOWN_GRACE_SECONDS`,
+  25 s). Un turno interrumpido que todavía no envió nada ni ejecutó
+  herramientas se **reanuda** al arrancar (hasta 3 reclamos) en vez de pasar
+  a una persona; con efectos, handoff como siempre.
+- Migración `010_reanudacion.sql` (aditiva): `dispatch_inbox.attempts`,
+  `dispatch_inbox.effects_at`, `pending_send.kind`.
+- Actualizar: **primero el CRM 073-A**, luego Nea. Subir el
+  `stop_grace_period` del contenedor a ≥ 40 s.
+
+#### Parche de auditoría 073-A
+
+- El handoff tras abandonar una respuesta (caducada o rechazada para siempre)
+  ya no se pierde si el CRM no contesta: queda en la cola como
+  `kind=handoff` (24 h).
+- `Retry-After` acepta también la fecha HTTP y descarta valores no finitos;
+  siempre queda entre 0 y 10 s.
+- La marca de efectos solo cuenta si la base la anotó: si falla, el siguiente
+  efecto la vuelve a intentar.
+- El ensayo («Probar mi agente») usa la misma `temperature` que el turno.
+
 ### Hotfixes del bot (vocero-crm 2.13.1)
 
 - **Un 502 o un 429 de OpenRouter ya no apaga los ajustes de velocidad.**

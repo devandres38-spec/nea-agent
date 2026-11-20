@@ -16,10 +16,30 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app.crm import CrmRechazo
+from app.efectos import registrar_efectos
+from app.obsoleta import registrar_chequeo
 from app.multiorg import organizacion_del_despacho
 from app.observabilidad import contexto_de_log
 
 logger = logging.getLogger("nea.dispatch.worker")
+
+# 073-A (D3) — Cuántas veces, como mucho, se reclama un despacho para
+# reanudarlo (la primera vez incluida). Un turno que revienta siempre igual
+# no se repite sin fin: al tercer reclamo pasa a una persona.
+MAX_RECLAMOS_PARA_REANUDAR = 3
+
+
+def puede_reanudar(job: Any) -> bool:
+    """¿Este despacho interrumpido se puede volver a correr sin riesgo?
+
+    Solo si el turno no llegó a enviar nada ni a ejecutar herramientas
+    (`effects_at` vacío; ver app/efectos.py) y no lleva demasiados reclamos.
+    """
+    return (
+        bool(job.recovery)
+        and getattr(job, "effects_at", None) is None
+        and int(getattr(job, "attempts", 1) or 1) <= MAX_RECLAMOS_PARA_REANUDAR
+    )
 
 
 def _rechazo(payload: dict[str, Any], exc: CrmRechazo) -> None:
@@ -123,18 +143,43 @@ async def _atender(ctx: Any, job: Any) -> bool:
             return
         expires = job.payload.get("expiresAt")
         expired = bool(expires and datetime.fromisoformat(expires.replace("Z", "+00:00")) <= datetime.now(timezone.utc))
-        if job.recovery or expired:
+        reanudar = not expired and puede_reanudar(job)
+        if expired or (job.recovery and not reanudar):
             await handoff(ctx, job.payload)
-        else:
-            try:
-                await _procesar(ctx, job.payload, durable=True)
-            except CrmRechazo as exc:
-                _rechazo(job.payload, exc)
-            except Exception:
-                logger.exception("dispatch failed; handing off without replay")
-                await handoff(ctx, job.payload)
+            return
+        if reanudar:
+            # 073-A (D3): Nea se cayó (redeploy) antes de que este turno
+            # hiciera nada visible. Volver a correrlo es seguro; apagarle la
+            # IA al lead por un reinicio, no.
+            logger.warning(
+                "despacho %s interrumpido sin efectos — lo reanudo (reclamo %d)",
+                job.payload.get("dispatchId"),
+                getattr(job, "attempts", 0),
+            )
+        try:
+            # La firma de siempre en el camino normal; la marca solo al reanudar.
+            extra = {"reanudacion": True} if reanudar else {}
+            await _procesar(ctx, job.payload, durable=True, **extra)
+        except CrmRechazo as exc:
+            _rechazo(job.payload, exc)
+        except Exception:
+            logger.exception("dispatch failed; handing off without replay")
+            await handoff(ctx, job.payload)
 
-    task = asyncio.create_task(execute())
+    marcador = getattr(job, "mark_effects", None)
+
+    async def sin_marcador() -> None:
+        return None
+
+    async def sin_chequeo() -> bool:
+        return False
+
+    # La tarea hereda el contexto: lo que el turno marque, cae en ESTA fila;
+    # y (073-C) puede preguntar si ya llegó un despacho más nuevo.
+    with registrar_efectos(marcador or sin_marcador), registrar_chequeo(
+        getattr(job, "has_newer", None) or sin_chequeo
+    ):
+        task = asyncio.create_task(execute())
     try:
         async with asyncio.timeout(240):
             while not task.done():
@@ -151,7 +196,8 @@ async def _atender(ctx: Any, job: Any) -> bool:
 
 
 async def _consumidor(ctx: Any, en_vuelo: Counter[str]) -> None:
-    while True:
+    apagando: asyncio.Event | None = getattr(ctx, "apagando", None)
+    while apagando is None or not apagando.is_set():
         try:
             if await drain_one(ctx, en_vuelo):
                 continue
@@ -159,11 +205,14 @@ async def _consumidor(ctx: Any, en_vuelo: Counter[str]) -> None:
             logger.exception("dispatch remains durable for recovery")
         # El aviso es solo un atajo: si otro consumidor lo apaga antes, este
         # vuelve a mirar la cola a los 2 s de todos modos.
+        if apagando is not None and apagando.is_set():
+            break
         ctx.dispatch_wake.clear()
         try:
             await asyncio.wait_for(ctx.dispatch_wake.wait(), timeout=2)
         except asyncio.TimeoutError:
             pass
+    logger.info("despacho: consumidor detenido (apagando) — sin reclamos nuevos")
 
 
 async def run(ctx: Any) -> None:

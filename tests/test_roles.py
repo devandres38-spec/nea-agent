@@ -42,7 +42,7 @@ def test_escalar_no_se_apaga():
 def test_solo_se_ensenan_las_encendidas():
     todas = tool_schemas(True)
     sin_agenda = solo_encendidas(todas, BusinessProfile(tools=frozenset({"ficha", "salida"})))
-    assert _nombres(sin_agenda) == {"update_ficha", "route_out", "handoff"}
+    assert _nombres(sin_agenda) == {"update_ficha", "route_out", "handoff", "solicitar_baja"}
     assert _nombres(solo_encendidas(todas, BusinessProfile())) == _nombres(todas)
 
 
@@ -70,7 +70,7 @@ async def test_sin_agendar_el_turno_no_ofrece_citas(respx_mock):
     ) as client:
         await despachar(client, ctx, esperar=True, text="quiero agendar una cita")
     llamada = ctx.llm.calls[0]
-    assert _nombres(llamada["tools"]) == {"update_ficha", "route_out", "handoff"}
+    assert _nombres(llamada["tools"]) == {"update_ficha", "route_out", "handoff", "solicitar_baja"}
     assert "NO AGENDA POR AQUÍ" in llamada["messages"][0]["content"]
     await ctx.crm.aclose()
 

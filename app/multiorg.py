@@ -54,7 +54,7 @@ import httpx
 from app.agenda import SondaDeAgenda
 from app.crm_brains import BrainsCrmClient
 from app.llm import OpenAiLlm
-from app.profile import ProfileProvider
+from app.profile import ProfileProvider, temperatura_valida
 
 if TYPE_CHECKING:
     from app.state import AppContext
@@ -138,7 +138,7 @@ class RegistroDeOrganizaciones:
         # Cacheados por la tupla completa y no por organizacion: si el miembro
         # cambia de modelo, la tupla cambia y el siguiente turno ya usa el
         # cliente nuevo sin que nadie tenga que invalidar nada.
-        self._llms: OrderedDict[tuple[str, str, str, str], OpenAiLlm] = OrderedDict()
+        self._llms: OrderedDict[tuple[str, str, str, str, float], OpenAiLlm] = OrderedDict()
         self._agenda_ttl = agenda_ttl
         self._sondas: OrderedDict[str, SondaDeAgenda] = OrderedDict()
 
@@ -208,8 +208,10 @@ class RegistroDeOrganizaciones:
         )
         model = str(config.get("model") or por_defecto.llm_model)
         transcribe = str(config.get("transcribeModel") or "")
+        # 073-A (D2) — La que mande el CRM para este negocio; si no, la de aquí.
+        temperatura = _temperatura_de(config, por_defecto)
         credencial = credencial_derivada(self._secreto, organization_id)
-        clave = (credencial, model, transcribe, base_url)
+        clave = (credencial, model, transcribe, base_url, temperatura)
         cliente = self._llms.get(clave)
         if cliente is not None:
             self._llms.move_to_end(clave)
@@ -230,6 +232,7 @@ class RegistroDeOrganizaciones:
                 # pero quien espera al proveedor colgado es el turno de aqui.
                 timeout=por_defecto.llm_timeout_seconds,
                 max_tokens=por_defecto.llm_max_tokens,
+                temperature=temperatura,
             )
             self._llms[clave] = cliente
             while len(self._llms) > self.MAX_LLMS:
@@ -285,6 +288,7 @@ class RegistroDeOrganizaciones:
             provider_sort=por_defecto.llm_provider_sort,
             timeout=por_defecto.llm_timeout_seconds,
             max_tokens=por_defecto.llm_max_tokens,
+            temperature=_temperatura_de(config, por_defecto),
         )
 
     async def aclose(self) -> None:
@@ -436,3 +440,13 @@ def organizacion_del_despacho(payload: dict[str, Any]) -> tuple[str, str] | None
     if not org_id:
         return None
     return org_id, str(org.get("slug") or org_id)
+
+
+def _temperatura_de(config: dict[str, Any], por_defecto: Any) -> float:
+    """073-A (D2) — La que mande el CRM para este negocio; si no, la de aquí.
+
+    Una sola regla para el turno y el ensayo: el dueño prueba al agente que
+    de verdad va a contestar.
+    """
+    temperatura = temperatura_valida(config.get("temperature"))
+    return por_defecto.llm_temperature if temperatura is None else temperatura

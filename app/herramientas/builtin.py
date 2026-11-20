@@ -113,6 +113,17 @@ async def _handoff(rt: Any, args: dict[str, Any]) -> dict[str, Any]:
     return rt._handoff(args)
 
 
+async def _solicitar_baja(rt: Any, args: dict[str, Any]) -> dict[str, Any]:
+    """073-B (D6) — El CRM registra la baja al recibir el handoff `opt_out`."""
+    rt.baja = True
+    rt.handoff_reason = "opt_out"
+    rt.handoff_summary = None
+    return {
+        "ok": True,
+        "nota": "La baja quedó registrada; el sistema le confirma al lead. No escribas nada más.",
+    }
+
+
 def _metodo(nombre: str):
     async def ejecutar(rt: Any, args: dict[str, Any]) -> dict[str, Any]:
         return await getattr(rt, nombre)(args)
@@ -139,6 +150,7 @@ REGISTRO = Registro(
         ),
         ToolSpec("route_out", "salida", _fijo("route_out"), _route_out),
         ToolSpec("handoff", "escalar", _fijo("handoff"), _handoff),
+        ToolSpec("solicitar_baja", "escalar", lambda _caps: copy.deepcopy(t.SOLICITAR_BAJA_SCHEMA), _solicitar_baja),
         ToolSpec(
             "list_bookings",
             "agendar",

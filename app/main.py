@@ -133,6 +133,7 @@ def _llm_del_arranque(settings: Settings, perfil: ProfileProvider | None) -> Any
             provider_sort=settings.llm_provider_sort,
             timeout=settings.llm_timeout_seconds,
             max_tokens=settings.llm_max_tokens,
+            temperature=settings.llm_temperature,
         )
     return OpenAiLlm(
         settings.llm_api_key,
@@ -143,6 +144,7 @@ def _llm_del_arranque(settings: Settings, perfil: ProfileProvider | None) -> Any
         provider_sort=settings.llm_provider_sort,
         timeout=settings.llm_timeout_seconds,
         max_tokens=settings.llm_max_tokens,
+        temperature=settings.llm_temperature,
     )
 
 
@@ -168,6 +170,33 @@ def _avisar_obsoletas() -> None:
             "despacha (BRAIN_DISPATCH_URL en el CRM → /vocero/dispatch de Nea).",
             ", ".join(puestas),
         )
+
+
+async def _apagar_con_orden(ctx: AppContext, workers: list[asyncio.Task[Any]]) -> None:
+    """073-A (D3) — Cierre ordenado ante SIGTERM (redeploy de Coolify).
+
+    1. `apagando`: los consumidores del despacho dejan de reclamar.
+    2. Se espera al worker del despacho —que termina cuando sus turnos en
+       curso terminan— hasta `NEA_SHUTDOWN_GRACE_SECONDS`.
+    3. Lo demás (y lo que no alcanzó) se cancela, como antes. Un turno
+       cortado aquí lo retoma la cola al arrancar: si no tuvo efectos se
+       reanuda; si los tuvo, pasa a una persona.
+
+    El contenedor necesita un `stop_grace_period` mayor que el margen, o
+    Docker lo mata antes con SIGKILL.
+    """
+    ctx.apagando.set()
+    ctx.dispatch_wake.set()  # que ningún consumidor siga dormido 2 s
+    margen = float(getattr(ctx.settings, "nea_shutdown_grace_seconds", 0) or 0)
+    despacho = [t for t in workers if t.get_name() == "dispatch-worker"]
+    if despacho and margen > 0:
+        logger.info("apagando: espero hasta %.0f s a los turnos en curso", margen)
+        _, pendientes = await asyncio.wait(despacho, timeout=margen)
+        if pendientes:
+            logger.warning("apagando: el margen se agotó con turnos en curso — los corto (la cola los retoma)")
+    for task in workers:
+        task.cancel()
+    await asyncio.gather(*workers, return_exceptions=True)
 
 
 def create_app(ctx: AppContext | None = None) -> FastAPI:
@@ -293,9 +322,7 @@ def create_app(ctx: AppContext | None = None) -> FastAPI:
         try:
             yield
         finally:
-            for task in workers:
-                task.cancel()
-            await asyncio.gather(*workers, return_exceptions=True)
+            await _apagar_con_orden(c, workers)
             if own_resources:
                 await c.crm.aclose()
                 if c.registro is not None:

@@ -64,7 +64,9 @@ async def test_abandoned_started_turn_only_handoffs(monkeypatch):
     await ctx.store.enqueue_dispatch("org_a", payload())
     async with ctx.store.claim_dispatch() as job:
         assert job and not job.recovery
-        # Simulates death without finish, after any number of external effects.
+        # Simulates death without finish, after an external effect (073-A:
+        # the turn marks it BEFORE sending or running a tool).
+        await job.mark_effects()
     row = next(iter(ctx.store.dispatch_inbox.values()))
     row["available_at"] = datetime.now(timezone.utc) - timedelta(seconds=1)
     process = AsyncMock()
@@ -74,6 +76,45 @@ async def test_abandoned_started_turn_only_handoffs(monkeypatch):
     process.assert_not_called()
     ctx.crm.post_handoff.assert_awaited_once_with("cv_a", "error")
     assert row["state"] == "done"
+    await ctx.crm.aclose()
+
+
+async def test_073a_turno_interrumpido_sin_efectos_se_reanuda(monkeypatch):
+    """073-A (D3): un redeploy que corta un turno que todavía no envió nada
+    ni ejecutó herramientas lo vuelve a correr — no le apaga la IA al lead."""
+    ctx = cloud()
+    await ctx.store.enqueue_dispatch("org_a", payload())
+    async with ctx.store.claim_dispatch() as job:
+        assert job and not job.recovery
+        # Muere sin `finish` y sin efectos.
+    row = next(iter(ctx.store.dispatch_inbox.values()))
+    row["available_at"] = datetime.now(timezone.utc) - timedelta(seconds=1)
+    process = AsyncMock()
+    monkeypatch.setattr("app.dispatch._procesar", process)
+    ctx.crm.post_handoff = AsyncMock()
+    await drain_one(ctx)
+    process.assert_awaited_once()
+    assert process.await_args.kwargs.get("reanudacion") is True
+    ctx.crm.post_handoff.assert_not_awaited()
+    assert row["state"] == "done"
+    await ctx.crm.aclose()
+
+
+async def test_073a_sin_efectos_pero_demasiados_reclamos_pasa_a_una_persona(monkeypatch):
+    """Un turno que revienta siempre igual no se reanuda sin fin."""
+    ctx = cloud()
+    await ctx.store.enqueue_dispatch("org_a", payload())
+    row = next(iter(ctx.store.dispatch_inbox.values()))
+    for _ in range(3):  # tres reclamos que murieron sin terminar
+        async with ctx.store.claim_dispatch() as job:
+            assert job is not None
+        row["available_at"] = datetime.now(timezone.utc) - timedelta(seconds=1)
+    process = AsyncMock()
+    monkeypatch.setattr("app.dispatch._procesar", process)
+    ctx.crm.post_handoff = AsyncMock()
+    await drain_one(ctx)
+    process.assert_not_called()
+    ctx.crm.post_handoff.assert_awaited_once_with("cv_a", "error")
     await ctx.crm.aclose()
 
 

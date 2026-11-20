@@ -62,6 +62,9 @@ class BusinessProfile:
     # brief local): Nea usa `LLM_MODEL`.
     llm_path: str | None = None
     llm_model: str | None = None
+    # 073-A (D2) — La que fija la plataforma para este negocio (`llm.temperature`);
+    # sin ella, LLM_TEMPERATURE de la instancia.
+    llm_temperature: float | None = None
     # 071 (D5) — ¿Este negocio agenda? Lo dice el CRM en el contexto
     # (`agent.agendaEnabled`, módulo agenda del negocio). `None` = no lo dice
     # (un CRM anterior, `single`): manda la sonda, como siempre.
@@ -126,19 +129,27 @@ def profile_from_payload(payload: dict[str, Any], default_name: str) -> Business
     )
 
 
-def _ia(valor: Any) -> dict[str, str | None]:
+def temperatura_valida(valor: Any) -> float | None:
+    """073-A — Una `temperature` del CRM, si es un número entre 0 y 2."""
+    if isinstance(valor, bool) or not isinstance(valor, (int, float)):
+        return None
+    return float(valor) if 0 <= valor <= 2 else None
+
+
+def _ia(valor: Any) -> dict[str, Any]:
     """El bloque `llm` del perfil (036): `{path, model}` o `null`.
 
     La ruta solo se acepta si es una ruta (`/…`): se pega detrás de
     `CRM_BASE_URL`, y otra cosa cambiaría el host al que viaja la llave.
     """
     if not isinstance(valor, dict):
-        return {"llm_path": None, "llm_model": None}
+        return {"llm_path": None, "llm_model": None, "llm_temperature": None}
     path = valor.get("path")
     model = valor.get("model")
     return {
         "llm_path": path if isinstance(path, str) and path.startswith("/") else None,
         "llm_model": (model.strip() or None) if isinstance(model, str) else None,
+        "llm_temperature": temperatura_valida(valor.get("temperature")),
     }
 
 

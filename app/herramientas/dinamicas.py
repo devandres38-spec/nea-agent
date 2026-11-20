@@ -47,6 +47,7 @@ RESERVADOS = frozenset(
         "coordination_consent",
         "route_out",
         "handoff",
+        "solicitar_baja",
         "notas",
     }
 )

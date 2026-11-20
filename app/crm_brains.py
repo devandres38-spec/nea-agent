@@ -31,6 +31,7 @@ from app.crm import (
     CrmError,
     CrmRechazo,
     CrmUnreachable,
+    error_de_envio,
     _404_de_agenda,
     es_caida,
     _agenda_apagada,
@@ -371,7 +372,7 @@ class BrainsCrmClient(CrmClient):
         if resp.status_code == 422 and _conflict_code(resp) == "fuera_de_ventana":
             raise CrmConflict("window_closed")
         if not resp.is_success:
-            raise CrmError(f"messages devolvió {resp.status_code}")
+            raise error_de_envio(resp.status_code)
         data: dict[str, Any] = resp.json()
         return data
 

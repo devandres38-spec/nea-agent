@@ -30,6 +30,30 @@ logger = logging.getLogger("nea.crm")
 class CrmError(Exception):
     """Fallo genérico hablando con el CRM (red, 5xx, 401...)."""
 
+    # 073-A (D3) — El código HTTP, cuando lo hubo. Lo lee quien decide si
+    # reintentar: un 4xx del envío no cambia por insistir.
+    status: int | None = None
+
+
+# 073-A (D3) — Lo que el CRM contesta al ENVÍO con estos códigos no sale
+# reintentando: cuerpo inválido o texto que no cabe (400/422), conversación
+# que no existe (404), demasiado grande (413), o el canal lo rechazó para
+# siempre (422 `envio_permanente`). El 422 `fuera_de_ventana` ya se traduce
+# antes a `CrmConflict`.
+ENVIO_TERMINAL = frozenset({400, 404, 413, 422})
+
+
+def error_de_envio(status: int) -> CrmError:
+    """El `CrmError` de un envío fallido, con su código."""
+    exc = CrmError(f"messages devolvió {status}")
+    exc.status = status
+    return exc
+
+
+def envio_terminal(exc: BaseException) -> bool:
+    """¿Este fallo del envío es definitivo?"""
+    return isinstance(exc, CrmError) and getattr(exc, "status", None) in ENVIO_TERMINAL
+
 
 class CrmRechazo(CrmError):
     """vocero-crm 070 (C-1) — El CRM rechazó la CREDENCIAL de esta organización.
@@ -182,7 +206,12 @@ def _404_de_agenda(response: httpx.Response, que: str) -> None:
 # libres ("pidió humano", "duda técnica") — aquí se normalizan SIEMPRE:
 # certificación 002 cazó en vivo que un reason fuera de catálogo era 422 y el
 # handoff se perdía con la IA aún activa.
-HANDOFF_REASONS = frozenset({"cliente", "modelo", "error", "ventana", "hostilidad"})
+HANDOFF_REASONS = frozenset(
+    # 073-A (D2): `sin_saldo`, `opt_out` y `abuso` los pone el sistema, no el
+    # modelo (el catálogo de `escalar` no cambia). Un CRM anterior a la 073
+    # los convierte en `modelo`: nunca 422.
+    {"cliente", "modelo", "error", "ventana", "hostilidad", "sin_saldo", "opt_out", "abuso"}
+)
 
 
 def canonical_handoff_reason(reason: str | None) -> str:
@@ -191,6 +220,11 @@ def canonical_handoff_reason(reason: str | None) -> str:
         return r
     if "hostil" in r or "groser" in r or "insult" in r:
         return "hostilidad"
+    # 073-A — Los motivos del sistema llegan exactos (arriba). Nada difuso
+    # para ellos: «crédito» puede ser una pregunta de financiación y «baja»
+    # está dentro de «trabaja».
+    if r == "sin_credencial":
+        return "sin_saldo"
     if any(k in r for k in ("humano", "persona", "pidi", "lead_request", "hablar")):
         return "cliente"
     if "error" in r:
@@ -301,7 +335,7 @@ class CrmClient:
         if resp.status_code == 409:
             raise CrmConflict(_conflict_code(resp))
         if resp.status_code != 200:
-            raise CrmError(f"messages devolvió {resp.status_code}")
+            raise error_de_envio(resp.status_code)
         data: dict[str, Any] = resp.json()
         return data
 
@@ -338,15 +372,17 @@ class CrmClient:
         data: dict[str, Any] = resp.json()
         return data
 
-    async def post_handoff(self, conversation_id: str, reason: str | None = None) -> None:
-        resp = await self._request(
-            "POST",
-            "/api/bot/handoff",
-            json={
-                "conversationId": conversation_id,
-                "reason": canonical_handoff_reason(reason),
-            },
-        )
+    async def post_handoff(
+        self, conversation_id: str, reason: str | None = None, *, summary: str | None = None
+    ) -> None:
+        cuerpo: dict[str, Any] = {
+            "conversationId": conversation_id,
+            "reason": canonical_handoff_reason(reason),
+        }
+        # vocero-crm 073-B (D2): aditivo; el CRM lo guarda como nota interna.
+        if summary:
+            cuerpo["summary"] = summary[:500]
+        resp = await self._request("POST", "/api/bot/handoff", json=cuerpo)
         if resp.status_code != 200:
             raise CrmError(f"handoff devolvió {resp.status_code}")
 

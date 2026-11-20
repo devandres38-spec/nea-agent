@@ -68,7 +68,6 @@ class TestLosExtrasSoloSeApaganPorUnaQuejaDeVerdad:
             (502, "Upstream provider returned 502"),
             (429, "Provider is rate limited, retry shortly"),
             (503, "No provider available for this model"),
-            (400, "Provider returned error"),
         ],
     )
     @respx.mock
@@ -134,6 +133,19 @@ class TestLosExtrasSoloSeApaganPorUnaQuejaDeVerdad:
         reloj[0] += 2
         await llm.complete([{"role": "user", "content": "y otra"}])
         assert json.loads(ruta.calls[3].request.content)["reasoning"] == {"effort": "minimal"}
+
+
+@respx.mock
+async def test_un_400_generico_no_apaga_los_extras_y_es_terminal() -> None:
+    # 073-A (D2): un 400 que no nombra los ajustes ya no se reintenta.
+    ruta = respx.post(URL).mock(
+        return_value=httpx.Response(400, json={"error": {"message": "Provider returned error"}})
+    )
+    llm = _cliente()
+    with pytest.raises(LlmExhausted):
+        await llm.complete([{"role": "user", "content": "hola"}])
+    assert llm._extras_ok is True
+    assert len(ruta.calls) == 1
 
 
 class TestElTopeDeSalida:

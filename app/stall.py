@@ -39,6 +39,9 @@ import re
 _PALABRAS_RELLENO = (
     r"ok(?:ay|ey|a|i)?|va|vale|sale|ah|ajá|aja|mmm?|hmm?|eh|este|ya|bueno|pues|"
     r"gracias|grax|muchas|mil|igualmente|saludos|bye|adi[oó]s|"
+    # 073-C (D7) — Colombia: los acuses de siempre.
+    r"listo|dale|h[aá]gale|de una|de acuerdo|breve|ch[eé]vere|s[uú]per|perfecto|genial|"
+    r"claro|entendido|chao|chau|bendiciones|"
     r"(?:ja|je|ji|ha){2,}|lol|:v"
 )
 # Emojis: símbolos (☺ ✌ ❤ ✅), pictogramas y caras (👍 👌 🙏 😂 🫡), con su
@@ -53,6 +56,11 @@ _RELLENO = re.compile(rf"^{_SEP}{_PIEZA}(?:{_SEP}{_PIEZA})*{_SEP}$", re.I)
 _SIN_LETRAS = re.compile(r"^[^\w]+$", re.UNICODE)
 
 MAX_CARACTERES_VACIO = 24  # arriba de esto asumimos que dijo algo
+
+# 073-C (D6) — Un sticker cuenta como relleno POR SU TIPO: en el historial
+# vive como un marcador largo (app/media.py) que por longitud parecía
+# contenido, y un lead que solo manda stickers nunca llegaba al cierre.
+PREFIJO_STICKER = "[El lead mandó un sticker"
 
 # Mensajes de relleno seguidos del lead que disparan el cierre.
 RACHA_VACIA = 3
@@ -83,6 +91,8 @@ def es_relleno(text: str) -> bool:
     """¿El mensaje del lead no aporta absolutamente nada?"""
     limpio = (text or "").strip()
     if not limpio:
+        return True
+    if limpio.startswith(PREFIJO_STICKER) and "\n" not in limpio:
         return True
     if len(limpio) > MAX_CARACTERES_VACIO:
         return False
