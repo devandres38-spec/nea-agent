@@ -106,7 +106,7 @@ class SenderWorker:
                         "sender: pending %d no salió a tiempo — abandonado + handoff",
                         item.id,
                     )
-                    await self._handoff(ctx, item.crm_conversation_id)
+                    await self._handoff(ctx, item)
                 continue
             with contexto_de_log(
                 org=item.organization_slug or item.organization_id or None,
@@ -165,7 +165,7 @@ class SenderWorker:
                 # a la persona que tiene que atenderlo.
                 logger.error("sender: pending %d rechazado para siempre (%s) — abandonado + handoff", item.id, exc)
                 await ctx.store.mark_pending_send_abandoned(item.id)
-                await self._handoff(ctx, item.crm_conversation_id)
+                await self._handoff(ctx, item)
                 return
             await self._reprogramar(ctx, item, now, exc)
             return
@@ -206,10 +206,30 @@ class SenderWorker:
             item.id, attempts, now + timedelta(seconds=delay)
         )
 
-    async def _handoff(self, ctx: AppContext, crm_conv_id: str) -> None:
+    async def _handoff(self, ctx: AppContext, item: PendingSend) -> None:
+        """Handoff `error` tras abandonar una respuesta.
+
+        Auditoría 073-A: si el CRM no contesta (red, 5xx), el handoff no se
+        pierde: queda en la cola como `kind=handoff` (24 h) y sale después.
+        Sin eso, la respuesta se abandonaba Y nadie se enteraba.
+        """
         try:
-            await ctx.crm.post_handoff(crm_conv_id, "error")
+            await ctx.crm.post_handoff(item.crm_conversation_id, "error")
         except CrmRechazo as exc:
             logger.warning("sender: sin credencial para el handoff (%s) — solo log", exc.status)
         except CrmError as exc:
-            logger.error("sender: no pude registrar el handoff tras abandono: %s", exc)
+            logger.error("sender: no pude registrar el handoff tras abandono (%s) — a la cola", exc)
+            try:
+                pendiente = await ctx.store.enqueue_pending_send(
+                    item.conversation_id,
+                    item.crm_conversation_id,
+                    "error",
+                    item.organization_id,
+                    item.organization_slug,
+                    item.dispatch_id,
+                    kind=KIND_HANDOFF,
+                )
+            except Exception as fallo:
+                logger.error("sender: tampoco pude encolar el handoff: %s", fallo)
+                return
+            logger.info("sender: handoff encolado como pending_send %d", pendiente)

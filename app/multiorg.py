@@ -209,9 +209,7 @@ class RegistroDeOrganizaciones:
         model = str(config.get("model") or por_defecto.llm_model)
         transcribe = str(config.get("transcribeModel") or "")
         # 073-A (D2) — La que mande el CRM para este negocio; si no, la de aquí.
-        temperatura = temperatura_valida(config.get("temperature"))
-        if temperatura is None:
-            temperatura = por_defecto.llm_temperature
+        temperatura = _temperatura_de(config, por_defecto)
         credencial = credencial_derivada(self._secreto, organization_id)
         clave = (credencial, model, transcribe, base_url, temperatura)
         cliente = self._llms.get(clave)
@@ -290,7 +288,7 @@ class RegistroDeOrganizaciones:
             provider_sort=por_defecto.llm_provider_sort,
             timeout=por_defecto.llm_timeout_seconds,
             max_tokens=por_defecto.llm_max_tokens,
-            temperature=por_defecto.llm_temperature,
+            temperature=_temperatura_de(config, por_defecto),
         )
 
     async def aclose(self) -> None:
@@ -442,3 +440,13 @@ def organizacion_del_despacho(payload: dict[str, Any]) -> tuple[str, str] | None
     if not org_id:
         return None
     return org_id, str(org.get("slug") or org_id)
+
+
+def _temperatura_de(config: dict[str, Any], por_defecto: Any) -> float:
+    """073-A (D2) — La que mande el CRM para este negocio; si no, la de aquí.
+
+    Una sola regla para el turno y el ensayo: el dueño prueba al agente que
+    de verdad va a contestar.
+    """
+    temperatura = temperatura_valida(config.get("temperature"))
+    return por_defecto.llm_temperature if temperatura is None else temperatura

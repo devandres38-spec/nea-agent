@@ -15,10 +15,13 @@ import asyncio
 import base64
 import json
 import logging
+import math
 import random
 import re
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any, Protocol
 
 from openai import AsyncOpenAI
@@ -68,18 +71,37 @@ def _status_de(exc: Exception) -> int | None:
 
 
 def _retry_after(exc: Exception) -> float | None:
-    """Segundos de `Retry-After` (solo la forma numérica), acotados."""
+    """Segundos de `Retry-After` (segundos o fecha HTTP), acotados a
+    `[0, RETRY_AFTER_MAX_SEGUNDOS]`. Ilegible o no finito → None."""
     response = getattr(exc, "response", None)
     headers = getattr(response, "headers", None)
     if headers is None:
         return None
+    crudo = str(headers.get("retry-after", "") or "").strip()
+    if not crudo:
+        return None
     try:
-        valor = float(str(headers.get("retry-after", "")).strip())
+        valor = float(crudo)
     except ValueError:
+        valor = _segundos_hasta(crudo)
+        if valor is None:
+            return None
+    if not math.isfinite(valor):
         return None
-    if valor < 0:
+    return min(max(valor, 0.0), RETRY_AFTER_MAX_SEGUNDOS)
+
+
+def _segundos_hasta(fecha_http: str) -> float | None:
+    """`Retry-After: Wed, 21 Oct 2026 07:28:00 GMT` → segundos desde ahora."""
+    try:
+        cuando = parsedate_to_datetime(fecha_http)
+    except (TypeError, ValueError, IndexError, OverflowError):
         return None
-    return min(valor, RETRY_AFTER_MAX_SEGUNDOS)
+    if cuando is None:
+        return None
+    if cuando.tzinfo is None:
+        cuando = cuando.replace(tzinfo=timezone.utc)
+    return (cuando - datetime.now(timezone.utc)).total_seconds()
 
 
 class ImagenNoSoportada(LlmExhausted):

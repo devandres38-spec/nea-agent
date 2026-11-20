@@ -38,6 +38,17 @@ Qué cambia en cada versión de Nea y qué hacer al actualizar. Cada tag
 - Actualizar: **primero el CRM 073-A**, luego Nea. Subir el
   `stop_grace_period` del contenedor a ≥ 40 s.
 
+#### Parche de auditoría 073-A
+
+- El handoff tras abandonar una respuesta (caducada o rechazada para siempre)
+  ya no se pierde si el CRM no contesta: queda en la cola como
+  `kind=handoff` (24 h).
+- `Retry-After` acepta también la fecha HTTP y descarta valores no finitos;
+  siempre queda entre 0 y 10 s.
+- La marca de efectos solo cuenta si la base la anotó: si falla, el siguiente
+  efecto la vuelve a intentar.
+- El ensayo («Probar mi agente») usa la misma `temperature` que el turno.
+
 ### Hotfixes del bot (vocero-crm 2.13.1)
 
 - **Un 502 o un 429 de OpenRouter ya no apaga los ajustes de velocidad.**

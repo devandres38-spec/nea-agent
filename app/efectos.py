@@ -36,8 +36,10 @@ def registrar_efectos(marcador: Marcador) -> Iterator[None]:
         nonlocal marcado
         if marcado:
             return
-        marcado = True
+        # Solo cuenta como marcado si la base lo anotó: si falla, el
+        # siguiente efecto lo vuelve a intentar (auditoría 073-A).
         await marcador()
+        marcado = True
 
     token = _marcador.set(una_vez)
     try:
