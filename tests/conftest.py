@@ -242,7 +242,7 @@ def mock_crm_basics(respx_mock: Any, **context_kwargs: Any) -> dict[str, Any]:
             side_effect=lambda request: httpx.Response(
                 200
                 if json.loads(request.content).get("reason")
-                in {"cliente", "modelo", "error", "ventana", "hostilidad"}
+                in {"cliente", "modelo", "error", "ventana", "hostilidad", "sin_saldo", "opt_out", "abuso"}
                 else 422,
                 json={},
             )

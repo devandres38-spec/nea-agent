@@ -239,7 +239,10 @@ async def test_sin_elegir_modelo_la_nota_de_voz_la_oye_uno_que_oye(respx_mock):
 
 async def test_402_sin_credencial_termina_en_silencio_y_handoff_error(sin_backoff, respx_mock):
     """Sin IA configurada (o pausada) el proxy contesta 402: el turno degrada
-    como con cualquier fallo del proveedor. Nada roto le llega al lead."""
+    sin mandarle nada al lead.
+
+    073-A (D2): ya no se reintenta (un 402 no cambia por insistir) y el
+    motivo es `sin_saldo`, lo que el dueño tiene que leer en su bandeja."""
     rutas = mock_crm_basics(respx_mock)
     respx_mock.get(f"{CRM_URL}/api/bot/profile").mock(
         return_value=httpx.Response(200, json=_perfil(None))
@@ -259,10 +262,10 @@ async def test_402_sin_credencial_termina_en_silencio_y_handoff_error(sin_backof
     finally:
         await ctx.crm.aclose()
 
-    assert proxy.call_count == 1 + OpenAiLlm.RETRIES
+    assert proxy.call_count == 1
     assert rutas["messages"].call_count == 0
     assert rutas["handoff"].call_count == 1
-    assert json.loads(rutas["handoff"].calls[0].request.content)["reason"] == "error"
+    assert json.loads(rutas["handoff"].calls[0].request.content)["reason"] == "sin_saldo"
     conv = await ctx.store.get_or_create_conversation(IDENTITY)
     assert conv.phase == "cerrada"
 

@@ -91,6 +91,13 @@ class OfferedSlot:
     offered_at: datetime = field(default_factory=utcnow)
 
 
+# 073-A (D2) — Qué lleva una fila de `pending_send`: la respuesta que no salió
+# (`content` = el texto) o un handoff que no se pudo registrar (`content` = el
+# motivo). Ver migrations/010_reanudacion.sql.
+KIND_MESSAGE = "message"
+KIND_HANDOFF = "handoff"
+
+
 @dataclass
 class PendingSend:
     """Respuesta generada cuyo envío al CRM agotó los reintentos del turno.
@@ -113,6 +120,8 @@ class PendingSend:
     # Y qué despacho estaba contestando: el CRM lo exige al responder por el
     # cerebro, y cuando el worker despierta el turno ya no existe para dárselo.
     dispatch_id: str = ""
+    # 073-A (D2) — `message` o `handoff` (KIND_*).
+    kind: str = KIND_MESSAGE
 
 
 @dataclass
@@ -212,6 +221,8 @@ class Store(Protocol):
         organization_id: str = "",
         organization_slug: str = "",
         dispatch_id: str = "",
+        *,
+        kind: str = KIND_MESSAGE,
     ) -> int: ...
     async def due_pending_sends(self, now: datetime) -> list[PendingSend]: ...
     async def claim_pending_sends(
@@ -374,6 +385,8 @@ class MemoryStore(MemoryDispatchStore):
         organization_id: str = "",
         organization_slug: str = "",
         dispatch_id: str = "",
+        *,
+        kind: str = KIND_MESSAGE,
     ) -> int:
         pid = next(self._ids)
         now = utcnow()
@@ -384,6 +397,7 @@ class MemoryStore(MemoryDispatchStore):
             organization_id=organization_id,
             organization_slug=organization_slug,
             dispatch_id=dispatch_id,
+            kind=kind,
         )
         return pid
 
@@ -475,6 +489,9 @@ class AppContext:
     # el contexto del turno; None fuera del modo multi-organización.
     organizacion: tuple[str, str] | None = None
     dispatch_wake: asyncio.Event = field(default_factory=asyncio.Event)
+    # 073-A (D3) — Puesto al apagar (SIGTERM): los consumidores del despacho
+    # dejan de reclamar y los turnos en curso terminan dentro del margen.
+    apagando: asyncio.Event = field(default_factory=asyncio.Event)
     # 031 — Cuándo llegó el último webhook de Meta a Nea, que desde la 2.0 ya
     # no lo recibe (app/webhook_retirado.py). Lo enseña /health.
     webhook_meta_ultimo: datetime | None = None

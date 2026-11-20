@@ -39,6 +39,11 @@ class DispatchJob:
     # De quién es: el worker cuenta los turnos en vuelo por organización.
     organization_id: str = ""
     conversation_id: str = ""
+    # 073-A (D3) — Cuántas veces se reclamó (esta incluida) y si el turno ya
+    # tuvo efectos (envió o ejecutó una herramienta) antes de interrumpirse.
+    attempts: int = 1
+    effects_at: datetime | None = None
+    mark_effects: Callable[[], Awaitable[None]] | None = None
 
 
 _CLAIM = """
@@ -62,12 +67,12 @@ WITH candidata AS (
   FOR UPDATE OF d SKIP LOCKED
   LIMIT 1)
 UPDATE dispatch_inbox t
-SET state = 'started', owner = $1,
+SET state = 'started', owner = $1, attempts = t.attempts + 1,
     available_at = now() + interval '3 minutes', updated_at = now()
 FROM candidata c
 WHERE t.organization_id = c.organization_id AND t.dispatch_id = c.dispatch_id
 RETURNING t.organization_id, t.dispatch_id, t.conversation_id, t.payload,
-          (c.previo <> 'queued') AS recovery
+          (c.previo <> 'queued') AS recovery, t.attempts, t.effects_at
 """
 
 
@@ -113,6 +118,12 @@ class PgDispatchStore:
             if result != "UPDATE 1":
                 raise RuntimeError("dispatch ownership lost")
 
+        async def mark_effects() -> None:
+            # 073-A (D3): una sola vez por fila (COALESCE), y solo si sigue
+            # siendo nuestra.
+            await self.pool.execute("""UPDATE dispatch_inbox SET effects_at=COALESCE(effects_at, now()),updated_at=now()
+              WHERE organization_id=$1 AND dispatch_id=$2 AND owner=$3 AND state='started'""", org, dispatch_id, owner)
+
         yield DispatchJob(
             json.loads(row["payload"]),
             bool(row["recovery"]),
@@ -120,6 +131,9 @@ class PgDispatchStore:
             heartbeat,
             organization_id=org,
             conversation_id=row["conversation_id"],
+            attempts=int(row["attempts"] or 1),
+            effects_at=row["effects_at"],
+            mark_effects=mark_effects,
         )
 
 
@@ -160,6 +174,7 @@ class MemoryDispatchStore:
             "payload": json.loads(json.dumps(payload)), "state": "queued",
             "available_at": datetime.now(timezone.utc), "owner": None,
             "conversation_id": payload["conversation"]["id"], "seq": self._dispatch_seq,
+            "attempts": 0, "effects_at": None,
         }
 
     async def forget_dispatches(self, org: str, conversation_id: str, keep: str) -> None:
@@ -198,6 +213,7 @@ class MemoryDispatchStore:
                 key, row = elegida
                 recovery = row["state"] != "queued"
                 owner = uuid4().hex
+                row["attempts"] = row.get("attempts", 0) + 1
                 row.update(state="started", owner=owner, available_at=ahora + LEASE)
 
                 async def finish(row: dict[str, Any] = row, owner: str = owner) -> None:
@@ -211,9 +227,15 @@ class MemoryDispatchStore:
                         raise RuntimeError("dispatch ownership lost")
                     row["available_at"] = datetime.now(timezone.utc) + LEASE
 
+                async def mark_effects(row: dict[str, Any] = row, owner: str = owner) -> None:
+                    if row.get("owner") == owner and row["state"] == "started":
+                        row["effects_at"] = row.get("effects_at") or datetime.now(timezone.utc)
+
                 job = DispatchJob(
                     row["payload"], recovery, finish, heartbeat,
                     organization_id=key[0], conversation_id=row["conversation_id"],
+                    attempts=row["attempts"], effects_at=row.get("effects_at"),
+                    mark_effects=mark_effects,
                 )
         yield job
 

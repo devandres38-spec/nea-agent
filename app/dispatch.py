@@ -242,7 +242,13 @@ async def olvidar(ctx: AppContext, payload: dict[str, Any]) -> None:
     )
 
 
-async def _procesar(ctx: AppContext, payload: dict[str, Any], *, durable: bool = False) -> None:
+async def _procesar(
+    ctx: AppContext,
+    payload: dict[str, Any],
+    *,
+    durable: bool = False,
+    reanudacion: bool = False,
+) -> None:
     dispatch_id = str(payload.get("dispatchId") or "")
     conversation = payload.get("conversation") or {}
     conversation_id = str(conversation.get("id") or "")
@@ -268,7 +274,10 @@ async def _procesar(ctx: AppContext, payload: dict[str, Any], *, durable: bool =
     # historial (`_anotar_leidos`); aquí solo se consulta.
     org = organizacion_del_despacho(payload) if ctx.settings.multi_org else None
     org_id = org[0] if org else ""
-    leidos = await ctx.store.already_processed(
+    # 073-A (D3): al reanudar un turno interrumpido, sus mensajes ya quedaron
+    # «leídos» (el turno los anotó antes de pensar). Filtrarlos dejaría el
+    # turno sin nada que contestar: la reanudación los vuelve a tomar todos.
+    leidos = set() if reanudacion else await ctx.store.already_processed(
         [marca_de_leido(org_id, m.wa_message_id) for m in mensajes if m.wa_message_id]
     )
     if leidos:
@@ -318,7 +327,7 @@ async def _procesar(ctx: AppContext, payload: dict[str, Any], *, durable: bool =
     # sepa a quién pasársela si revienta antes de leer el contexto.
     await handle_flush(
         ctx_turno, identity, mensajes, crm_conversation_id=conversation_id,
-        propagate_errors=durable,
+        propagate_errors=durable, reanudacion=reanudacion,
     )
 
 

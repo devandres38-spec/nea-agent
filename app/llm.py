@@ -15,6 +15,7 @@ import asyncio
 import base64
 import json
 import logging
+import random
 import re
 import time
 from dataclasses import dataclass, field
@@ -27,6 +28,58 @@ logger = logging.getLogger("nea.llm")
 
 class LlmExhausted(Exception):
     """El LLM falló todos los reintentos — el turno debe degradar en silencio."""
+
+    # 073-A (D2) — Con qué motivo pasa el turno la conversación a una persona.
+    motivo_handoff: str = "error"
+
+
+# 073-A (D2) — Lo que el proveedor contesta con estos códigos no cambia por
+# reintentar: la llave no tiene saldo (402), no vale (401/403) o la petición
+# está mal (400/422, p. ej. contexto demasiado largo). Antes se reintentaban
+# tres veces por turno, con la llave del negocio.
+_CAUSA_POR_STATUS = {
+    400: "peticion_invalida",
+    401: "credencial",
+    402: "sin_saldo",
+    403: "credencial",
+    422: "peticion_invalida",
+}
+
+# 073-A (D2) — Espera máxima que se le concede a un `Retry-After`: el lead
+# está mirando «escribiendo…».
+RETRY_AFTER_MAX_SEGUNDOS = 10.0
+
+
+class LlmRechazado(LlmExhausted):
+    """073-A (D2) — El proveedor rechazó la llamada de forma terminal."""
+
+    def __init__(self, status: int, causa: str, detalle: str) -> None:
+        super().__init__(f"{status} {causa}: {detalle}")
+        self.status = status
+        self.causa = causa
+        # Sin saldo (o sin credencial en el CRM) es lo que el dueño tiene que
+        # leer en su bandeja; «modelo» o «error» le ocultaban la causa.
+        self.motivo_handoff = "sin_saldo" if causa == "sin_saldo" else "error"
+
+
+def _status_de(exc: Exception) -> int | None:
+    status = getattr(exc, "status_code", None)
+    return status if isinstance(status, int) else None
+
+
+def _retry_after(exc: Exception) -> float | None:
+    """Segundos de `Retry-After` (solo la forma numérica), acotados."""
+    response = getattr(exc, "response", None)
+    headers = getattr(response, "headers", None)
+    if headers is None:
+        return None
+    try:
+        valor = float(str(headers.get("retry-after", "")).strip())
+    except ValueError:
+        return None
+    if valor < 0:
+        return None
+    return min(valor, RETRY_AFTER_MAX_SEGUNDOS)
 
 
 class ImagenNoSoportada(LlmExhausted):
@@ -122,6 +175,10 @@ DEFAULT_TIMEOUT = 45.0
 # herramienta (JSON roto → `{}`) o el razonamiento. 0 = no se manda.
 DEFAULT_MAX_TOKENS = 2048
 
+# 073-A (D2) — `temperature` por defecto (LLM_TEMPERATURE). La fija la
+# plataforma; el cliente final no la ve.
+DEFAULT_TEMPERATURE = 0.4
+
 # 2.13.1 — Cuánto duran apagados los ajustes de velocidad tras una queja del
 # proveedor. Antes era para siempre (hasta reiniciar el contenedor).
 EXTRAS_APAGADOS_SEGUNDOS = 3600.0
@@ -132,12 +189,20 @@ EXTRAS_APAGADOS_SEGUNDOS = 3600.0
 # ajustes para siempre.
 _NOMBRA_LOS_EXTRAS = re.compile(
     r"reasoning"
+    r"|temperature"
     r"|provider\.sort"
     r"|[\"'`]provider[\"'`]"
     r"|[\"'`]sort[\"'`]"
     r"|\b(?:provider|sort) (?:field|param|parameter|option|preferences?)\b",
     re.IGNORECASE,
 )
+
+
+def _espera(intento: int) -> float:
+    """Backoff con jitter: 1–1.5 s, 2–3 s. Sin jitter, los turnos que fallaron
+    a la vez reintentan a la vez contra el mismo proveedor."""
+    base = float(2**intento)
+    return base + random.uniform(0, base * 0.5)
 
 
 def _corto_por_el_tope(resp: Any) -> bool:
@@ -148,6 +213,8 @@ def _corto_por_el_tope(resp: Any) -> bool:
 
 def _es_queja_de_los_extras(exc: Exception) -> bool:
     """¿El proveedor rechazó la petición (400) por `reasoning`/`provider`?
+
+    073-A — También por `temperature`: va con los ajustes y se apaga con ellos.
 
     Solo un 400: un 429 o un 5xx no dicen nada de si el modelo acepta los
     ajustes, y un error sin código HTTP (red, timeout) tampoco.
@@ -172,6 +239,7 @@ class OpenAiLlm:
         timeout: float = DEFAULT_TIMEOUT,
         http_client: Any | None = None,
         max_tokens: int = DEFAULT_MAX_TOKENS,
+        temperature: float | None = DEFAULT_TEMPERATURE,
     ) -> None:
         # base_url ≠ None → proveedor OpenAI-compatible (p. ej. OpenRouter,
         # para el bench de modelos del 002). Ojo: la transcripción de audio
@@ -211,6 +279,9 @@ class OpenAiLlm:
         self._extras_apagados_hasta: float | None = None
         # 2.13.1 — Tope de salida por llamada de chat (no por transcripción).
         self._max_tokens = max(0, int(max_tokens or 0))
+        # 073-A (D2) — Sin fijarla el proveedor usa 1.0: más variación de la
+        # que una conversación de ventas aguanta. None = no se manda.
+        self._temperature = temperature
         # 071 (D12) — ¿El modelo ve imágenes? Se aprende del primer rechazo y
         # es pegajoso, como `_extras_ok`: el soporte no cambia a media vida.
         self._vision_ok = True
@@ -353,7 +424,7 @@ class OpenAiLlm:
             return True
         return False
 
-    def _quiza_por_los_extras(self, exc: Exception) -> None:
+    def _quiza_por_los_extras(self, exc: Exception) -> bool:
         """Si el proveedor rechazó `reasoning` o `provider`, se apagan un rato.
 
         Aqui pasan modelos de muchos miembros, no uno solo elegido por
@@ -368,7 +439,7 @@ class OpenAiLlm:
         porque cada una tiene su cliente.
         """
         if not self._extras_ok or not _es_queja_de_los_extras(exc):
-            return
+            return False
         self._extras_apagados_hasta = time.monotonic() + EXTRAS_APAGADOS_SEGUNDOS
         logger.warning(
             "llm: %s no acepta los ajustes de velocidad - se apagan %d min para "
@@ -376,6 +447,7 @@ class OpenAiLlm:
             self._model,
             int(EXTRAS_APAGADOS_SEGUNDOS // 60),
         )
+        return True
 
     async def complete(
         self,
@@ -399,6 +471,8 @@ class OpenAiLlm:
                     kwargs["tool_choice"] = "auto"
                 if tope:
                     kwargs["max_tokens"] = tope
+                if self._temperature is not None and self._extras_ok:
+                    kwargs["temperature"] = self._temperature
                 extra = self._extras()
                 if extra:
                     kwargs["extra_body"] = extra
@@ -426,16 +500,28 @@ class OpenAiLlm:
                     return reply
                 last_error = ValueError("respuesta vacía del LLM (sin content ni tools)")
                 logger.warning("llm: respuesta vacía, intento %d", attempt + 1)
-            except Exception as exc:  # red, API, parseo — todo reintenta
+            except Exception as exc:  # red, API, parseo
                 if tiene_imagenes(messages) and _es_sin_vision(exc):
                     self._vision_ok = False
                     logger.warning("llm: %s no acepta imágenes — sin reintentos", self._model)
                     raise ImagenNoSoportada(str(exc)) from exc
                 last_error = exc
-                self._quiza_por_los_extras(exc)
+                status = _status_de(exc)
+                if self._quiza_por_los_extras(exc):
+                    # El 400 era por los ajustes: el reintento sale sin ellos.
+                    pausa = None
+                elif status in _CAUSA_POR_STATUS:
+                    # 073-A (D2): terminal. Reintentar solo cobraba de nuevo.
+                    causa = _CAUSA_POR_STATUS[status]
+                    logger.warning("llm: %s rechazó la llamada (%d %s) — sin reintentos", self._model, status, causa)
+                    raise LlmRechazado(status, causa, str(exc)[:300]) from exc
+                else:
+                    pausa = _retry_after(exc)
                 logger.warning("llm: fallo en intento %d: %s", attempt + 1, exc)
+            else:
+                pausa = None
             if attempt < self.RETRIES:
-                await asyncio.sleep(2**attempt)  # 1 s, 2 s
+                await asyncio.sleep(pausa if pausa is not None else _espera(attempt))
             attempt += 1
         raise LlmExhausted(str(last_error))
 
@@ -513,6 +599,7 @@ class LlmPorElCrm:
         provider_sort: str = "",
         timeout: float = DEFAULT_TIMEOUT,
         max_tokens: int = DEFAULT_MAX_TOKENS,
+        temperature: float | None = DEFAULT_TEMPERATURE,
     ) -> None:
         self._crm = crm_base_url.rstrip("/")
         self._api_key = api_key
@@ -523,9 +610,10 @@ class LlmPorElCrm:
         self._provider_sort = provider_sort
         self._timeout = timeout
         self._max_tokens = max_tokens
-        self._clientes: dict[tuple[str, str], OpenAiLlm] = {}
+        self._temperature = temperature
+        self._clientes: dict[tuple[str, str, float | None], OpenAiLlm] = {}
 
-    async def _eleccion(self) -> tuple[str, str]:
+    async def _eleccion(self) -> tuple[str, str, float | None]:
         """(modelo, base_url) según el perfil vigente.
 
         Un perfil que no se pudo leer no tumba el turno: se piensa con
@@ -534,21 +622,27 @@ class LlmPorElCrm:
         """
         model: str | None = None
         path: str | None = None
+        temperatura: float | None = None
         if self._perfil is not None:
             try:
                 perfil = await self._perfil.get()
                 model = getattr(perfil, "llm_model", None)
                 path = getattr(perfil, "llm_path", None)
+                temperatura = getattr(perfil, "llm_temperature", None)
             except Exception as exc:
                 logger.warning("llm por el CRM: sin perfil (%s) — uso LLM_MODEL", exc)
-        return model or self._model, self._crm + (path or RUTA_LLM_DEL_CRM)
+        return (
+            model or self._model,
+            self._crm + (path or RUTA_LLM_DEL_CRM),
+            temperatura if temperatura is not None else self._temperature,
+        )
 
     async def cliente(self) -> OpenAiLlm:
         """El `OpenAiLlm` del modelo que el negocio tiene elegido ahora."""
         clave = await self._eleccion()
         cliente = self._clientes.get(clave)
         if cliente is None:
-            model, base_url = clave
+            model, base_url, temperatura = clave
             cliente = OpenAiLlm(
                 self._api_key,
                 model,
@@ -558,6 +652,7 @@ class LlmPorElCrm:
                 provider_sort=self._provider_sort,
                 timeout=self._timeout,
                 max_tokens=self._max_tokens,
+                temperature=temperatura,
             )
             self._clientes[clave] = cliente
             logger.info("llm por el CRM: pienso con %s", model)

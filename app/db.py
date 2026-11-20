@@ -70,6 +70,8 @@ def _pending_send_desde_fila(row: Any) -> PendingSend:
         organization_id=row["organization_id"],
         organization_slug=row["organization_slug"],
         dispatch_id=row["dispatch_id"],
+        # 073-A — La lección de arriba: la columna nueva se lee aquí o no existe.
+        kind=row["kind"] or "message",
     )
 
 
@@ -348,13 +350,15 @@ class PgStore(PgDispatchStore):
         organization_id: str = "",
         organization_slug: str = "",
         dispatch_id: str = "",
+        *,
+        kind: str = "message",
     ) -> int:
         row = await self.pool.fetchrow(
             """
             INSERT INTO pending_send
               (conversation_id, crm_conversation_id, content,
-               organization_id, organization_slug, dispatch_id)
-            VALUES ($1, $2, $3, $4, $5, $6) RETURNING id
+               organization_id, organization_slug, dispatch_id, kind)
+            VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id
             """,
             conversation_id,
             crm_conversation_id,
@@ -362,6 +366,7 @@ class PgStore(PgDispatchStore):
             organization_id,
             organization_slug,
             dispatch_id,
+            kind,
         )
         assert row is not None
         return row["id"]

@@ -6,6 +6,38 @@ Qué cambia en cada versión de Nea y qué hacer al actualizar. Cada tag
 
 ## Sin publicar
 
+### Cero silencios y cero apagones (vocero-crm 073-A)
+
+- **Nunca silencio negro.** Al agotar las rondas de herramientas Nea pide UNA
+  respuesta más, sin herramientas; si ni así hay texto, handoff `error`
+  (antes: silencio y nadie se enteraba). El reintento de una respuesta
+  inválida también va sin herramientas: no repite citas, ficha ni etapa.
+- **Errores del proveedor.** `400/401/402/403/422` se cortan sin reintentar
+  (antes: tres llamadas cobradas por turno). Un 402 —o el `sin_credencial`
+  del CRM— termina en handoff **`sin_saldo`**. `429` y `5xx` reintentan con
+  jitter y respetan `Retry-After` (máx. 10 s).
+- **`LLM_TEMPERATURE`** (default `0.4`); el perfil o la configuración del CRM
+  pueden traer `llm.temperature` por negocio. Un 400 que la nombra la apaga
+  1 h, como los ajustes de velocidad.
+- **Handoff resiliente.** 3 intentos en el turno y, agotados, a la cola
+  durable (`pending_send` de tipo `handoff`, 24 h). Motivos nuevos del
+  catálogo: `sin_saldo`, `opt_out`, `abuso` (los pone el sistema; la
+  herramienta `escalar` no cambia). Un CRM anterior a la 073 los guarda como
+  `modelo`.
+- **Envío.** Un rechazo definitivo del CRM (`400/404/413/422`, incluido el
+  nuevo `422 envio_permanente`) no se reintenta ni se encola: handoff
+  `error`. Una respuesta encolada vive **15 min** (`PENDING_SEND_MAX_MINUTES`),
+  no 24 h: pasado eso se abandona con handoff, nunca se entrega obsoleta.
+- **Redeploys sin apagones.** Al recibir SIGTERM Nea deja de reclamar
+  despachos y espera los turnos en curso (`NEA_SHUTDOWN_GRACE_SECONDS`,
+  25 s). Un turno interrumpido que todavía no envió nada ni ejecutó
+  herramientas se **reanuda** al arrancar (hasta 3 reclamos) en vez de pasar
+  a una persona; con efectos, handoff como siempre.
+- Migración `010_reanudacion.sql` (aditiva): `dispatch_inbox.attempts`,
+  `dispatch_inbox.effects_at`, `pending_send.kind`.
+- Actualizar: **primero el CRM 073-A**, luego Nea. Subir el
+  `stop_grace_period` del contenedor a ≥ 40 s.
+
 ### Hotfixes del bot (vocero-crm 2.13.1)
 
 - **Un 502 o un 429 de OpenRouter ya no apaga los ajustes de velocidad.**
