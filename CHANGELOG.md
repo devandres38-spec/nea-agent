@@ -6,6 +6,27 @@ Qué cambia en cada versión de Nea y qué hacer al actualizar. Cada tag
 
 ## Sin publicar
 
+### KB de producción, prompt caching y observabilidad (vocero-crm 074)
+
+- **Enlaces oficiales del negocio**: `resources` llega también por
+  `/api/brains/context` y se sanea (`app/datos.py`: solo `https://` sin
+  espacios, comillas ni corchetes, hasta 10, etiqueta en una línea). El
+  prompt los presenta como ENLACES OFICIALES: datos, y los únicos que el
+  agente puede compartir (antes, «recursos alternativos» solo para
+  `route_out`). Doradas B0 intactas: el cambio va en `DELTAS_074`.
+- **Títulos de la KB**: una entrada con `title` se aplana con `## título`
+  encima (igual que el `kb` de `/api/bot/profile`). Sin título, el texto de
+  siempre.
+- **Prompt caching**: el `system` queda fijo por negocio y canal hasta
+  `CONTEXTO ACTUAL` (chasis + perfil + enlaces + conocimiento) y todo lo vivo
+  va después; una prueba lo exige (`tests/test_074.py`).
+- **`X-Vocero-Dispatch`**: las llamadas al modelo de un turno le dicen al
+  proxy del CRM de qué despacho son (para `llm_usage`). Solo hacia el CRM.
+- **`pending_send` en orden estricto**: si un trozo de una respuesta partida
+  falla de forma pasajera, los siguientes de esa conversación esperan detrás
+  de él (no se adelantan en la misma pasada); las demás conversaciones
+  siguen.
+
 ### Parche final de la auditoría 073-C
 
 - **El validador ya no confunde preguntas con promesas.** «¿Quieres que te

@@ -66,7 +66,25 @@ class SenderWorker:
             else await self._ctx.store.due_pending_sends(now)
         )
         inicio = time.monotonic()
+        # vocero-crm 074 (E10, cierre de 073-C) — Orden estricto por
+        # conversación: una respuesta partida son varias filas seguidas. Si
+        # la N falla de forma pasajera (se reprograma), la N+1 de ESA
+        # conversación no se intenta en esta pasada: se mueve detrás de la N.
+        # Las demás conversaciones no esperan.
+        bloqueadas: dict[tuple[str, str], datetime] = {}
         for item in pendientes:
+            clave = (item.organization_id or "", item.crm_conversation_id or "")
+            if clave in bloqueadas:
+                # Justo detrás del que falló (no del lease: con lease, `next_retry_at`
+                # de una fila reclamada es el fin de la reserva, no su turno).
+                detras = bloqueadas[clave] + timedelta(milliseconds=1)
+                logger.info(
+                    "sender: pending %d espera al anterior de su conversación — sin adelantarse",
+                    item.id,
+                )
+                await self._ctx.store.reschedule_pending_send(item.id, item.attempts, detras)
+                bloqueadas[clave] = detras
+                continue
             if con_lease:
                 # A-3: el reloj de esta pasada (el `now` del reclamo + lo que
                 # ya se tardó). Sin margen de lease, la fila puede ser ya de
@@ -113,7 +131,9 @@ class SenderWorker:
                 dispatch=item.dispatch_id or None,
                 conversation=item.crm_conversation_id or None,
             ):
-                await self._attempt(ctx, item, now)
+                reintento = await self._attempt(ctx, item, now)
+            if reintento is not None:
+                bloqueadas[clave] = reintento
 
     def _vida(self, item: PendingSend) -> timedelta:
         if item.kind == KIND_HANDOFF:
@@ -123,10 +143,9 @@ class SenderWorker:
 
     async def _attempt(
         self, ctx: AppContext, item: PendingSend, now: datetime
-    ) -> None:
+    ) -> datetime | None:
         if item.kind == KIND_HANDOFF:
-            await self._attempt_handoff(ctx, item, now)
-            return
+            return await self._attempt_handoff(ctx, item, now)
         # Qué despacho estaba contestando. El CRM lo exige para responder por
         # el cerebro, y aquí el turno que lo sabía ya no existe: sale de la
         # fila. Sin esto el reintento diferido se rechazaba con 422 hasta
@@ -149,7 +168,7 @@ class SenderWorker:
                 item.organization_slug or item.organization_id or "este negocio",
             )
             await ctx.store.mark_pending_send_abandoned(item.id)
-            return
+            return None
         except CrmConflict as exc:
             # ai_paused / window_closed: ya no procede — silencio respetuoso.
             logger.info(
@@ -158,7 +177,7 @@ class SenderWorker:
                 exc.code,
             )
             await ctx.store.mark_pending_send_abandoned(item.id)
-            return
+            return None
         except CrmError as exc:
             if envio_terminal(exc):
                 # 073-A (D3): no va a salir nunca; reintentar solo retrasaba
@@ -166,9 +185,8 @@ class SenderWorker:
                 logger.error("sender: pending %d rechazado para siempre (%s) — abandonado + handoff", item.id, exc)
                 await ctx.store.mark_pending_send_abandoned(item.id)
                 await self._handoff(ctx, item)
-                return
-            await self._reprogramar(ctx, item, now, exc)
-            return
+                return None
+            return await self._reprogramar(ctx, item, now, exc)
         await ctx.store.mark_pending_send_delivered(item.id)
         # Al historial local: Nea debe recordar lo que (por fin) dijo.
         await ctx.store.add_message(item.conversation_id, "assistant", item.content)
@@ -176,7 +194,7 @@ class SenderWorker:
 
     async def _attempt_handoff(
         self, ctx: AppContext, item: PendingSend, now: datetime
-    ) -> None:
+    ) -> datetime | None:
         """073-A (D2) — Un handoff que el turno no pudo registrar."""
         reason, summary = leer_handoff(item.content)
         try:
@@ -187,16 +205,15 @@ class SenderWorker:
         except CrmRechazo as exc:
             logger.warning("sender: sin credencial para el handoff pendiente %d (%s) — abandonado", item.id, exc.status)
             await ctx.store.mark_pending_send_abandoned(item.id)
-            return
+            return None
         except CrmError as exc:
-            await self._reprogramar(ctx, item, now, exc)
-            return
+            return await self._reprogramar(ctx, item, now, exc)
         await ctx.store.mark_pending_send_delivered(item.id)
         logger.info("sender: handoff pendiente %d registrado (%s)", item.id, reason)
 
     async def _reprogramar(
         self, ctx: AppContext, item: PendingSend, now: datetime, exc: Exception
-    ) -> None:
+    ) -> datetime:
         attempts = item.attempts + 1
         delay = min(self.BACKOFF_BASE * (2.0**item.attempts), self.BACKOFF_CAP)
         logger.warning(
@@ -206,9 +223,9 @@ class SenderWorker:
             exc,
             delay,
         )
-        await ctx.store.reschedule_pending_send(
-            item.id, attempts, now + timedelta(seconds=delay)
-        )
+        siguiente = now + timedelta(seconds=delay)
+        await ctx.store.reschedule_pending_send(item.id, attempts, siguiente)
+        return siguiente
 
     async def _handoff(self, ctx: AppContext, item: PendingSend) -> None:
         """Handoff `error` tras abandonar una respuesta.

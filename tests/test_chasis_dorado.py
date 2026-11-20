@@ -31,7 +31,7 @@ from dataclasses import replace
 from app.chasis.armar import LINEA_IDIOMA, VOZ_TU
 from app.profile import BusinessProfile, profile_from_payload
 from app.crm_brains import _perfil_desde_contexto
-from app.prompt import build_system_prompt
+from app.prompt import ENCABEZADO_ENLACES, build_system_prompt
 from app.state import Conversation, OfferedSlot
 
 DORADOS = Path(__file__).parent / "fixtures" / "prompt"
@@ -200,6 +200,42 @@ def aplicar_deltas_073(texto: str) -> str:
     return _HORA_DEL_NEGOCIO.sub(_a_12, texto)
 
 
+# vocero-crm 074 (D8) — Los enlaces del negocio pasan de «recursos
+# alternativos para leads que no califican» a ENLACES OFICIALES verificados:
+# los únicos que el agente comparte, enmarcados como datos y con la etiqueta
+# entre comillas. Sustitución EXACTA de esas dos líneas; lo demás, intacto.
+_ENLACES_B0 = (
+    "Recursos alternativos para leads que no califican (compártelos al despedirlos con route_out):",
+    "- Blog: https://ejemplo.co/blog",
+)
+DELTAS_074: list[tuple[str, str]] = [
+    ("\n".join(_ENLACES_B0), ENCABEZADO_ENLACES + "\n- «Blog»: https://ejemplo.co/blog"),
+]
+
+
+def aplicar_deltas_074(texto: str) -> str:
+    for viejo, nuevo in DELTAS_074:
+        texto = texto.replace(viejo, nuevo)
+    return texto
+
+
+def test_los_deltas_074_tocan_solo_los_enlaces() -> None:
+    """El delta existe en los dorados con enlaces (no está muerto) y cambia
+    exactamente las dos líneas de los enlaces, nada más."""
+    con_enlaces = 0
+    for nombre in sorted(CASOS):
+        antes = aplicar_deltas_073(aplicar_deltas_071((DORADOS / f"{nombre}.txt").read_bytes().decode("utf-8"), nombre))
+        despues = aplicar_deltas_074(antes)
+        if antes == despues:
+            continue
+        con_enlaces += 1
+        a, d = antes.splitlines(), despues.splitlines()
+        assert len(a) == len(d), nombre
+        assert [x for x, y in zip(a, d) if x != y] == list(_ENLACES_B0), nombre
+    # Los tres B0 con PERFIL_SINGLE traen el enlace «Blog» (el cuarto es el dorado 071_single_usted).
+    assert con_enlaces == 3
+
+
 def test_los_deltas_073_del_chasis_encuentran_lo_que_reemplazan() -> None:
     """Cada sustitución del chasis existe en al menos un dorado B0 (no hay
     deltas muertos) y ningún dorado conserva un mexicanismo tras aplicarlos."""
@@ -216,8 +252,8 @@ def test_los_deltas_073_del_chasis_encuentran_lo_que_reemplazan() -> None:
 def test_el_prompt_no_cambia_ni_una_letra(nombre: str) -> None:
     prompt = build_system_prompt(now=AHORA, tz=BOGOTA, **CASOS[nombre])
     original = (DORADOS / f"{nombre}.txt").read_bytes().decode("utf-8")
-    esperado = aplicar_deltas_073(aplicar_deltas_071(original, nombre))
-    assert prompt == esperado, f"el prompt de {nombre} cambió más allá de lo aprobado en la 071/073"
+    esperado = aplicar_deltas_074(aplicar_deltas_073(aplicar_deltas_071(original, nombre)))
+    assert prompt == esperado, f"el prompt de {nombre} cambió más allá de lo aprobado en la 071/073/074"
 
 
 def test_los_deltas_073_tocan_solo_lo_aprobado() -> None:
@@ -250,7 +286,7 @@ def test_los_tratos_nuevos_tienen_su_dorado(nombre: str) -> None:
     archivo = DORADOS / f"{nombre}.txt"
     if os.environ.get("NEA_ACTUALIZAR_DORADOS") == "1":
         archivo.write_bytes(prompt.encode("utf-8"))
-    assert prompt == aplicar_deltas_073(archivo.read_bytes().decode("utf-8"))
+    assert prompt == aplicar_deltas_074(aplicar_deltas_073(archivo.read_bytes().decode("utf-8")))
 
 
 def test_un_trato_solo_cambia_la_linea_de_la_voz() -> None:

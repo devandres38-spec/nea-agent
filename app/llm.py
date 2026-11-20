@@ -19,6 +19,7 @@ import math
 import random
 import re
 import time
+from app.observabilidad import despacho_actual
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -262,6 +263,7 @@ class OpenAiLlm:
         http_client: Any | None = None,
         max_tokens: int = DEFAULT_MAX_TOKENS,
         temperature: float | None = DEFAULT_TEMPERATURE,
+        cabecera_despacho: bool = False,
     ) -> None:
         # base_url ≠ None → proveedor OpenAI-compatible (p. ej. OpenRouter,
         # para el bench de modelos del 002). Ojo: la transcripción de audio
@@ -315,6 +317,17 @@ class OpenAiLlm:
         # Contadores de uso (para el bench de costos del 002): tokens reales
         # reportados por el proveedor, acumulados por instancia.
         self.usage = {"prompt": 0, "cached": 0, "completion": 0, "llamadas": 0}
+        # vocero-crm 074 (E8) — Solo cuando quien recibe es el CRM (su proxy
+        # registra el uso por despacho en `llm_usage`): a un proveedor externo
+        # no se le cuenta qué despacho es.
+        self._cabecera_despacho = cabecera_despacho
+
+    def _cabeceras_del_turno(self) -> dict[str, Any]:
+        """`extra_headers` con `X-Vocero-Dispatch` del turno en curso (o nada)."""
+        if not self._cabecera_despacho:
+            return {}
+        despacho = despacho_actual()
+        return {"extra_headers": {"X-Vocero-Dispatch": despacho}} if despacho else {}
 
     @property
     def puede_transcribir(self) -> bool:
@@ -380,6 +393,7 @@ class OpenAiLlm:
         for attempt in range(2):
             try:
                 resp = await self._client.chat.completions.create(
+                    **self._cabeceras_del_turno(),
                     model=self._transcribe_model,
                     messages=[
                         {
@@ -503,6 +517,7 @@ class OpenAiLlm:
                 extra = self._extras()
                 if extra:
                     kwargs["extra_body"] = extra
+                kwargs.update(self._cabeceras_del_turno())
                 resp = await self._client.chat.completions.create(
                     model=self._model, messages=messages, **kwargs
                 )
@@ -680,6 +695,7 @@ class LlmPorElCrm:
                 timeout=self._timeout,
                 max_tokens=self._max_tokens,
                 temperature=temperatura,
+                cabecera_despacho=True,
             )
             self._clientes[clave] = cliente
             logger.info("llm por el CRM: pienso con %s", model)

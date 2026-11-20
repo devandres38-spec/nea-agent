@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from app.crm import CrmError
+from app.datos import recursos_saneados
 
 logger = logging.getLogger("nea.profile")
 
@@ -103,11 +104,8 @@ def profile_from_payload(payload: dict[str, Any], default_name: str) -> Business
     kb_text = payload.get("kb") or None
     if isinstance(kb_text, str) and kb_text.strip() == EMPTY_KB_SENTINEL:
         kb_text = None
-    resources = [
-        {"label": str(r.get("label") or r.get("url") or ""), "url": str(r.get("url") or "")}
-        for r in resources_raw
-        if isinstance(r, dict) and r.get("url")
-    ]
+    # vocero-crm 074 (D8) — Enlaces oficiales: solo https, saneados (app/datos.py).
+    resources = recursos_saneados(resources_raw)
     return BusinessProfile(
         cloud=prof.get("cloud") is True,
         config_version=int(prof.get("configVersion") or 1),
