@@ -359,6 +359,12 @@ def _linea_cerrada(cerrada: dict) -> str:
     return f"- Su cita del {label} ya no está vigente."
 
 
+LINEA_HERRAMIENTAS_PROPIAS = (
+    "- Este negocio tiene herramientas propias; úsalas solo para lo que dice "
+    "su descripción y nunca las nombres al cliente."
+)
+
+
 def build_system_prompt(
     *,
     profile: BusinessProfile,
@@ -371,6 +377,7 @@ def build_system_prompt(
     tz: ZoneInfo | None = None,
     recordatorios: bool = False,
     canal: str | None = None,
+    herramientas_propias: bool = False,
 ) -> str:
     """Chasis + perfil del negocio + bloque de contexto vivo de esta conversación.
 
@@ -472,6 +479,10 @@ def build_system_prompt(
     por_reunir = linea_datos_por_reunir(context) if ficha_activa else None
     if por_reunir:
         lines.append(por_reunir)
+    # vocero-crm 072-B (D15) — Solo si el turno trae herramientas de módulo;
+    # sin ellas, ni una letra (dorados B0).
+    if herramientas_propias:
+        lines.append(LINEA_HERRAMIENTAS_PROPIAS)
 
     headline = referral_headline
     if not headline:

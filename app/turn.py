@@ -21,6 +21,7 @@ from app.agenda import agenda_vigente
 from app.config import ZONA_POR_DEFECTO, canonical_identity
 from app.crm import CrmConflict, CrmError, CrmRechazo, CrmUnreachable
 from app.formato import formatear_para
+from app.herramientas.dinamicas import registro_del_turno, sabe_llamar_herramientas, tiene_dinamicas
 from app.hostility import ALERT as HOSTILITY_ALERT, hostile_streak
 from app.llm import ImagenNoSoportada, LlmExhausted
 from app.stall import (
@@ -411,6 +412,10 @@ async def run_turn(
     canal = next((m.channel for m in inbound if m.channel), None) or (
         (context.get("contact") or {}).get("channel")
     )
+    # vocero-crm 072-B (D15): el registro de herramientas de ESTE turno —
+    # nativas + las de módulo que trajo el contexto—. Uno solo para el
+    # prompt, el catálogo que ve el modelo y lo que se ejecuta.
+    registro = registro_del_turno(context, puede_ejecutar=sabe_llamar_herramientas(ctx.crm))
     system = build_system_prompt(
         profile=profile,
         context=context,
@@ -421,6 +426,7 @@ async def run_turn(
         tz=tz,
         recordatorios=bool(getattr(ctx.crm, "supports_agenda_v2", False)),
         canal=canal,
+        herramientas_propias=tiene_dinamicas(registro),
     )
     # Se traen más mensajes de los que ve el LLM: el candado de cierre cuenta
     # el hilo COMPLETO del lead, no solo la ventana de contexto.
@@ -483,6 +489,7 @@ async def run_turn(
         etapas=etapas_siguientes(context),
         profesionales=profesionales_del_contexto(context),
         context=context,
+        registro=registro,
     )
     try:
         try:
@@ -820,8 +827,10 @@ async def _tool_loop(
                     bool(getattr(ctx.crm, "supports_coordination", False)),
                     context=getattr(runtime, "contexto", None),
                     etapas=list(getattr(runtime, "etapas", []) or []),
+                    registro=getattr(runtime, "registro", None),
                 ),
                 getattr(runtime, "_profile", None),
+                getattr(runtime, "registro", None),
             ),
         )
         if not reply.tool_calls:

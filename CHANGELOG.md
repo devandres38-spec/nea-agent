@@ -6,6 +6,27 @@ Qué cambia en cada versión de Nea y qué hacer al actualizar. Cada tag
 
 ## Sin publicar
 
+### Herramientas de módulo (vocero-crm 072, ronda B)
+
+- **Herramientas propias del negocio.** Si el CRM (2.13+) manda
+  `moduleTools` en el contexto, Nea las vuelve a validar (nombre y prefijo
+  del módulo, sin chocar con una nativa ni una reservada, 4 KB por esquema y
+  12 KB en total, 8 como mucho; lo que no cumple se descarta con aviso) y las
+  ofrece en ESE turno, ejecutándolas por `POST /api/brains/tools/{name}`.
+  El registro de herramientas es por turno: el global nunca se toca y dos
+  negocios a la vez no se mezclan. Sin `moduleTools`, nada cambia (dorados
+  B0 intactos); con ellas, una línea más en el contexto del turno.
+- **Un nombre desconocido ya no pasa como «escalar».** Antes cualquier
+  esquema con un nombre fuera del registro pasaba el filtro del perfil.
+- **401/403 de herramienta son terminales** (`CrmRechazo`), también en las
+  nativas: ya no se le devuelven al modelo como `crm_error`.
+- **Auditoría 072-B.** Sin despacho en curso no se llama al CRM; los 422
+  `despacho_desconocido` y 409 `cerebro_reasignado` se traducen para el
+  modelo; un resultado de más de 4 KB no entra al contexto; y si la
+  herramienta sigue en curso o el CRM ya le escribió al cliente, el resultado
+  lleva una nota para no reintentar ni repetir.
+- Actualizar: redesplegar. Contra un CRM 2.12 nada cambia.
+
 ### Ficha según el negocio (vocero-crm 072, ronda A)
 
 - **`update_ficha` con los campos del negocio.** Si el CRM manda

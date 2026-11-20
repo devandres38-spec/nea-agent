@@ -22,6 +22,7 @@ from app.crm import (
     AgendaUnavailable,
     CrmConflict,
     CrmError,
+    CrmRechazo,
     SlotNotOffered,
     SlotTaken,
 )
@@ -345,25 +346,49 @@ def __getattr__(nombre: str) -> Any:
     raise AttributeError(nombre)
 
 
-def solo_encendidas(schemas: list[dict[str, Any]], profile: Any) -> list[dict[str, Any]]:
+def clave_permitida(clave: str | None, profile: Any) -> bool:
+    """¿Esta clave del registro del turno se puede usar con este perfil y rol?
+
+    - None (nombre que no está en el registro del turno): nunca.
+    - `modulo:*` (vocero-crm 072-B, D15): sí. Solo existe en el registro del
+      turno si vino en `context.moduleTools`, y el CRM ya filtró por módulo
+      encendido; `profile.tools` es el catálogo FIJO y no las conoce.
+    - El resto: perfil del negocio ∩ rol (071, D20).
+    """
+    from app.herramientas.dinamicas import es_clave_de_modulo
+    from app.roles import rol_de
+
+    if clave is None:
+        return False
+    if es_clave_de_modulo(clave):
+        return True
+    permite = getattr(profile, "permite", None)
+    if not callable(permite):
+        return True
+    return bool(permite(clave) and rol_de(getattr(profile, "role", None)).permite(clave))
+
+
+def solo_encendidas(schemas: list[dict[str, Any]], profile: Any, registro: Any = None) -> list[dict[str, Any]]:
     """Las herramientas que el perfil deja encendidas (034).
 
     071 (D20): efectivas = rol ∩ perfil del negocio ∩ capacidades del CRM.
     Las capacidades ya filtraron `schemas` (`tool_schemas`); aquí, el rol
     (`app/roles.py`) y lo que el dueño encendió.
+
+    072-B: `registro` es el del turno (nativas + herramientas de módulo); sin
+    él, el global. Un esquema cuyo nombre no está en ese registro se cae.
     """
     from app.herramientas.builtin import REGISTRO
-    from app.roles import rol_de
 
-    permite = getattr(profile, "permite", None)
-    if not callable(permite):
-        return schemas
-    rol = rol_de(getattr(profile, "role", None))
+    registro = registro or REGISTRO
     out = []
     for t in schemas:
-        clave = REGISTRO.clave_de(t.get("function", {}).get("name", ""))
-        if permite(clave) and rol.permite(clave):
+        nombre = t.get("function", {}).get("name", "")
+        clave = registro.clave_de(nombre)
+        if clave_permitida(clave, profile):
             out.append(t)
+        elif clave is None:
+            logger.warning("tools: esquema %r fuera del registro del turno — no se ofrece", nombre)
     return out
 
 
@@ -373,6 +398,7 @@ def tool_schemas(
     coordination: bool = False,
     context: dict[str, Any] | None = None,
     etapas: list[str] | None = None,
+    registro: Any = None,
 ) -> list[dict[str, Any]]:
     """El catálogo que se le ofrece al modelo en ESTE turno.
 
@@ -382,11 +408,13 @@ def tool_schemas(
     prompt que se acuerde de no usarla.
 
     071 (D20): sale del registro de `ToolSpec` (`app/herramientas/`).
+    072-B: `registro` = el del turno (con las herramientas de módulo); sin
+    él, el de las nativas.
     """
     from app.herramientas.builtin import REGISTRO
     from app.herramientas.registro import Capacidades
 
-    return REGISTRO.esquemas(
+    return (registro or REGISTRO).esquemas(
         Capacidades(
             agenda=agenda_enabled,
             agenda_v2=agenda_v2,
@@ -546,11 +574,20 @@ class ToolRuntime:
         etapas: list[str] | None = None,
         profesionales: list[dict[str, str]] | None = None,
         context: dict[str, Any] | None = None,
+        registro: Any = None,
     ) -> None:
         self._ctx = ctx
         # Auditoría 071 (A-7): el contexto del turno, para el catálogo
         # (`esquema_de_ficha`, la 072) y para validar lo que se ejecuta.
         self.contexto = context
+        # vocero-crm 072-B (D15): el registro de ESTE turno — nativas + las
+        # herramientas de módulo que vinieron en el contexto. Lo que se ofrece
+        # (`_tool_loop`) y lo que se ejecuta (`execute`) salen de él.
+        if registro is None:
+            from app.herramientas.dinamicas import registro_del_turno, sabe_llamar_herramientas
+
+            registro = registro_del_turno(context, puede_ejecutar=sabe_llamar_herramientas(getattr(ctx, "crm", None)))
+        self.registro = registro
         # vocero-cloud 233 — con quién se puede agendar (`booking.agendas`).
         self.profesionales: list[dict[str, str]] = list(profesionales or [])
         # 038 — A qué etapas puede mover al lead (`lead.nextStages`).
@@ -571,13 +608,15 @@ class ToolRuntime:
         self.etapa_movida: str | None = None
 
     async def execute(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
-        """Despacha por registro (071, D20), no por `if name == …`."""
-        from app.herramientas.builtin import REGISTRO
-        from app.herramientas.registro import Capacidades
+        """Despacha por registro (071, D20), no por `if name == …`.
 
+        072-B: por el registro del turno. Un `CrmRechazo` (401/403: la
+        credencial ya no vale) NO se convierte en un resultado para el modelo:
+        sube, y el despacho termina como terminal (sin handoff ni reintento).
+        """
         caps = self.capacidades()
         try:
-            spec = REGISTRO.get(name)
+            spec = self.registro.get(name)
             if spec is None or not spec.ejecutable(caps):
                 logger.warning("tools: herramienta desconocida %r", name)
                 return {"ok": False, "error": f"herramienta desconocida: {name}"}
@@ -591,6 +630,8 @@ class ToolRuntime:
                     "detalle": "esa acción no está disponible aquí; sigue sin ella o haz handoff",
                 }
             return await spec.ejecutar(self, args)
+        except CrmRechazo:
+            raise
         except CrmError as exc:
             logger.warning("tools: %s falló contra el CRM: %s", name, exc)
             return {
@@ -612,14 +653,12 @@ class ToolRuntime:
         )
 
     def _permitida(self, spec: Any, caps: Any) -> bool:
-        """Lo mismo que se le ofreció: capacidades ∩ perfil ∩ rol (A-7, D20)."""
-        from app.roles import rol_de
+        """Lo mismo que se le ofreció: capacidades ∩ perfil ∩ rol (A-7, D20).
 
-        return bool(
-            spec.ofrecer(caps)
-            and self._profile.permite(spec.clave)
-            and rol_de(getattr(self._profile, "role", None)).permite(spec.clave)
-        )
+        Una de módulo (`modulo:*`) está permitida por haber venido en el
+        contexto de este turno (`clave_permitida`).
+        """
+        return bool(spec.ofrecer(caps) and clave_permitida(spec.clave, self._profile))
 
     async def _update_ficha(self, args: dict[str, Any]) -> dict[str, Any]:
         # Tolera el drift del LLM: manda lo que haya, el CRM normaliza flojo.

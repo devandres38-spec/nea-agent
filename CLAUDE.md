@@ -23,7 +23,7 @@ idempotentes al arranque · httpx (CRM y OpenAI) · pytest + respx · Docker
 | El trato (tú/usted/neutro) y la regla de idioma | `app/chasis/armar.py` (`VOCES`, `LINEA_IDIOMA`) |
 | La confirmación de cita (guardarraíl ok/pie/contradicción) | `app/confirmacion.py` |
 | La capa de persona del negocio | `app/profile.py` (CRM → brief local → mínimo) |
-| Las acciones del bot | registro de `ToolSpec` en `app/herramientas/` (punto de enchufe de la 072) + ejecución en `app/tools.py` + orquestación en `app/turn.py` |
+| Las acciones del bot | registro de `ToolSpec` en `app/herramientas/` + ejecución en `app/tools.py` + orquestación en `app/turn.py` · herramientas de módulo del CRM (072-B): `app/herramientas/dinamicas.py` (registro POR TURNO, nunca muta `REGISTRO`) + `BrainsCrmClient.call_tool` |
 | El contrato con el CRM | `app/crm.py` (espejo del bot gateway de vocero) · prueba gemela del despacho en `tests/test_despacho_raiz.py` |
 | La entrada (despacho del CRM, los dos modos) | `app/dispatch.py` · cola durable `app/dispatch_store.py` + `app/dispatch_worker.py` |
 | Con qué piensa (llave propia o la del CRM por `/api/bot/llm`) | `app/llm.py` (`LlmPorElCrm`) · elección al arranque en `app/main.py` (`_llm_del_arranque`) |
