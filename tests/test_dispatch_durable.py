@@ -97,3 +97,23 @@ async def test_pdf_parser_isolated_valid_and_corrupt():
     pdf.write(buf)
     assert await _pdf_text(buf.getvalue()) == ""
     assert await _pdf_text(b"not a pdf") is None
+
+
+async def test_vocero_080_no_repite_envio_incierto_ni_lo_encola():
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    import pytest
+    from app.crm import CrmUnreachable
+    from app.turn import _send_estado
+
+    crm = SimpleNamespace(send_message=AsyncMock(side_effect=CrmUnreachable("respuesta incierta")))
+    store = SimpleNamespace(enqueue_pending_send=AsyncMock())
+    ctx = SimpleNamespace(
+        crm=crm, store=store,
+        settings=SimpleNamespace(multi_org=True, brain_deployment_secret="fixture-vocero-080"),
+    )
+    with pytest.raises(CrmUnreachable):
+        await _send_estado(ctx, 1, "cv", "respuesta")
+    crm.send_message.assert_awaited_once()
+    store.enqueue_pending_send.assert_not_awaited()

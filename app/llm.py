@@ -12,6 +12,7 @@ Gotchas del brief que se honran aquí:
 from __future__ import annotations
 
 import asyncio
+
 import base64
 import json
 import logging
@@ -19,6 +20,8 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from openai import AsyncOpenAI
+
+from app.crm_brains import OrganizacionSuspendida
 
 logger = logging.getLogger("nea.llm")
 
@@ -302,6 +305,11 @@ class OpenAiLlm:
                 last_error = ValueError("respuesta vacía del LLM (sin content ni tools)")
                 logger.warning("llm: respuesta vacía, intento %d", attempt + 1)
             except Exception as exc:  # red, API, parseo — todo reintenta
+                body = getattr(exc, "body", None)
+                error = body.get("error", body) if isinstance(body, dict) else {}
+                if (getattr(exc, "status_code", None) == 403 and isinstance(error, dict)
+                        and error.get("code") == "organization_suspended"):
+                    raise OrganizacionSuspendida() from exc
                 last_error = exc
                 self._quiza_por_los_extras(exc)
                 logger.warning("llm: fallo en intento %d: %s", attempt + 1, exc)

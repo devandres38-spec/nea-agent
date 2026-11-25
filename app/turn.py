@@ -21,7 +21,7 @@ from app.agenda import agenda_vigente
 from app.config import canonical_identity
 from app.cierres import todo_es_cierre
 from app.crm import CrmConflict, CrmError, CrmUnreachable
-from app.crm_brains import DESPACHO_SUPERADO
+from app.crm_brains import DESPACHO_SUPERADO, OrganizacionSuspendida
 from app.formato import a_whatsapp
 from app.hostility import ALERT as HOSTILITY_ALERT, hostile_streak
 from app.candados import (
@@ -366,6 +366,8 @@ async def run_turn(
     # turno con herramientas dura más.
     try:
         await ctx.crm.post_typing(str(crm_conv_id))
+    except OrganizacionSuspendida:
+        raise
     except Exception as exc:
         logger.debug("typing de %s falló (%s) — sigo", crm_conv_id, exc)
     escribiendo = _Escribiendo(ctx, str(crm_conv_id))
@@ -1054,6 +1056,8 @@ async def _send_estado(ctx: AppContext, conv_id: int, crm_conv_id: str, text: st
             logger.info("envío bloqueado por el CRM (%s) — silencio", exc.code)
             return "bloqueado"
         except CrmError as exc:
+            if ctx.settings.multi_org and getattr(ctx.settings, "brain_deployment_secret", ""):
+                raise
             logger.warning("envío falló (intento %d): %s", attempt + 1, exc)
             if attempt < SEND_ATTEMPTS - 1:
                 await asyncio.sleep(2.0**attempt)

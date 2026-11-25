@@ -6,6 +6,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
+from app.crm_brains import OrganizacionSuspendida
 from app.multiorg import organizacion_del_despacho
 
 logger = logging.getLogger("nea.dispatch.worker")
@@ -39,6 +40,8 @@ async def drain_one(ctx: Any) -> bool:
             else:
                 try:
                     await _procesar(ctx, job.payload, durable=True)
+                except OrganizacionSuspendida:
+                    return
                 except Exception:
                     logger.exception("dispatch failed; handing off without replay")
                     await handoff(ctx, job.payload)
@@ -51,6 +54,8 @@ async def drain_one(ctx: Any) -> bool:
                     if not task.done():
                         await job.heartbeat()
                 await task
+            await job.finish()
+        except OrganizacionSuspendida:
             await job.finish()
         finally:
             if not task.done():

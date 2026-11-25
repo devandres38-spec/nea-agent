@@ -23,6 +23,7 @@ from app.config import Settings
 from app.crm import CrmClient
 from app.crm_brains import BrainsCrmClient
 from app.dispatch import router as dispatch_router
+from app.readiness import router as readiness_router
 from app.ensayo import router as ensayo_router
 from app.dispatch_worker import run as run_dispatch_worker
 from app.db import PgStore
@@ -170,6 +171,8 @@ def create_app(ctx: AppContext | None = None) -> FastAPI:
         own_resources = app.state.ctx is None
         if own_resources:
             settings = Settings()
+            if settings.multi_org and settings.brain_deployment_secret and len(settings.brain_deployment_secret) < 16:
+                raise RuntimeError("BRAIN_DEPLOYMENT_SECRET debe tener al menos 16 caracteres")
             _avisar_obsoletas()
             store = PgStore(settings.database_url, settings.database_schema)
             await store.connect()
@@ -188,7 +191,8 @@ def create_app(ctx: AppContext | None = None) -> FastAPI:
             if settings.multi_org:
                 registro = RegistroDeOrganizaciones(
                     settings.crm_base_url,
-                    settings.crm_brain_secret,
+                    settings.dispatch_secret,
+                    id_en_cabecera=bool(settings.brain_deployment_secret),
                     nombre_por_defecto=settings.agent_name,
                     brief_path=settings.brief_path or None,
                 )
@@ -256,21 +260,13 @@ def create_app(ctx: AppContext | None = None) -> FastAPI:
                 c.agenda_sonda.ttl,
             )
 
-        followup_worker = FollowupWorker(c)
-        sender_worker = SenderWorker(c)
-        workers = [
-            asyncio.create_task(run_dispatch_worker(c), name="dispatch-worker"),
-            asyncio.create_task(followup_worker.run(), name="followup-worker"),
-            asyncio.create_task(sender_worker.run(), name="sender-worker"),
-        ]
-        logger.info(
-            "Nea arriba (%s): despacho + seguimiento + envíos pendientes corriendo",
-            (
-                "cloud multi-organización"
-                if c.settings.multi_org
-                else "cloud" if c.settings.cloud_mode else "estándar"
-            ),
-        )
+        workers = [asyncio.create_task(run_dispatch_worker(c), name="dispatch-worker")]
+        if not (c.settings.multi_org and c.settings.brain_deployment_secret):
+            workers.extend([
+                asyncio.create_task(FollowupWorker(c).run(), name="followup-worker"),
+                asyncio.create_task(SenderWorker(c).run(), name="sender-worker"),
+            ])
+        logger.info("Nea arriba con %s worker(s)", len(workers))
         try:
             yield
         finally:
@@ -289,6 +285,7 @@ def create_app(ctx: AppContext | None = None) -> FastAPI:
     # ya no se recibe, contesta 503 para que Meta reintente mientras quien
     # instala lo devuelve al CRM.
     app.include_router(dispatch_router)
+    app.include_router(readiness_router)
     app.include_router(ensayo_router)
     app.include_router(webhook_retirado_router)
 

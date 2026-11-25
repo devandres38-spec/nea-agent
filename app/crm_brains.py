@@ -19,6 +19,7 @@ cambia por que este archivo exista.
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 from typing import Any
@@ -59,6 +60,7 @@ MOTIVOS_CLOUD = frozenset({"sin_credencial", "sin_respuesta"})
 RUTAS = {
     "/api/bot/context": "/api/brains/context",
     "/api/bot/messages": "/api/brains/messages",
+    "/api/bot/stage": "/api/brains/stage",
     "/api/bot/ficha": "/api/brains/ficha",
     "/api/bot/handoff": "/api/brains/handoff",
     "/api/bot/typing": "/api/brains/typing",
@@ -73,6 +75,10 @@ RUTAS = {
 RUTAS_POR_PREFIJO = {
     "/api/bot/media/": "/api/brains/media/",
 }
+
+
+class OrganizacionSuspendida(Exception):
+    """El CRM bloqueó la operación para todo el negocio."""
 
 
 class BrainsCrmClient(CrmClient):
@@ -182,9 +188,18 @@ class BrainsCrmClient(CrmClient):
         contexto. Sin esto habria que pedir el contexto dos veces por
         despacho — una para las credenciales y otra dentro del turno.
         """
-        resp = await self._request(
-            "GET", "/api/bot/context", params={"conversationId": conversation_id, "contextVersion": "2"}
-        )
+        for intento in range(3):
+            try:
+                resp = await self._request(
+                    "GET", "/api/bot/context", params={"conversationId": conversation_id, "contextVersion": "2"}
+                )
+            except CrmUnreachable:
+                if intento == 2:
+                    raise
+            else:
+                if not es_caida(resp.status_code) or intento == 2:
+                    break
+            await asyncio.sleep(0.25 * (2 ** intento))
         if resp.status_code != 200:
             logger.warning(
                 "precarga del contexto de %s: el CRM respondio %s",
@@ -208,14 +223,17 @@ class BrainsCrmClient(CrmClient):
         """
         return self._llm
 
-    def _request(self, method: str, url: str, **kwargs: Any):  # type: ignore[override]
+    async def _request(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
         ruta = RUTAS.get(url, url)
         if ruta == url:
             for origen, destino in RUTAS_POR_PREFIJO.items():
                 if url.startswith(origen):
                     ruta = destino + url.removeprefix(origen)
                     break
-        return super()._request(method, ruta, **kwargs)
+        resp = await super()._request(method, ruta, **kwargs)
+        if resp.status_code == 403 and _conflict_code(resp) == "organization_suspended":
+            raise OrganizacionSuspendida()
+        return resp
 
     async def send_message(
         self, conversation_id: str, text: str, dispatch_id: str = ""
