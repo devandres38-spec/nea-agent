@@ -1,5 +1,7 @@
 # Nea — Guía para Codex
 
+> **Entorno VPS y flujo obligatorio de asistentes:** Lee [`../docs-entorno/ENTORNO-DEV.md`](../docs-entorno/ENTORNO-DEV.md) (Python 3.11 en `.venv`, arranque `.venv/bin/uvicorn app.main:app --reload --port 8000`, Postgres compartido en `DATABASE_SCHEMA=nea`, Vocero en `http://127.0.0.1:3000`) y [`../docs-entorno/FLUJO-ASISTENTES.md`](../docs-entorno/FLUJO-ASISTENTES.md). **Precedencia:** las reglas duras de este archivo mandan en el dominio de Nea; `FLUJO-ASISTENTES.md` manda en ritmo de ejecución y Git — **cero "Big Bang", una sola fase por turno con parada obligatoria, `.venv/bin/pytest` al cerrar fase (y `vocero-crm` si se toca el contrato) y prohibido `git commit`/`push`/`merge` sin permiso.**
+
 Microservicio FastAPI del agente de agendamiento. El CRM
 ([vocero-crm](https://github.com/kevinrivm/vocero-crm)) recibe los mensajes de
 WhatsApp, Instagram, Messenger y TikTok y se los **despacha** a Nea firmados
@@ -129,8 +131,3 @@ hasta verde. Prohibido delegar la prueba al dueño.
 
 Nuevas variables → `.env.example` con placeholder `REEMPLAZA_...` y guía
 inline. Jamás secretos en el repo ni en logs.
-
-## Entorno activo en este VPS y flujo de asistentes (dev)
-
-- **Guía del entorno VPS:** [`../docs-entorno/ENTORNO-DEV.md`](../docs-entorno/ENTORNO-DEV.md) — Python 3.11 en `.venv`, arranque dev con `source .venv/bin/activate && uvicorn app.main:app --reload --port 8000`, pruebas con `.venv/bin/pytest`. Comparte el Postgres de `../vocero-crm/docker-compose.dev.yml` en `DATABASE_SCHEMA=nea` y conversa con Vocero en `http://127.0.0.1:3000`.
-- **Flujo obligatorio de asistentes y Git:** [`../docs-entorno/FLUJO-ASISTENTES.md`](../docs-entorno/FLUJO-ASISTENTES.md) — **cero implementaciones de golpe**: planificar en fases pequeñas (SDD ligero + CDD si se toca el contrato con Vocero; TDD en bugs), implementar **una sola fase por turno**, correr `.venv/bin/pytest` y **detenerse** hasta recibir luz verde explícita para la siguiente fase. Nunca hacer `git commit`/`push`/`merge` sin permiso.
