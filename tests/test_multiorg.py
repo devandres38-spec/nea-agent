@@ -409,3 +409,44 @@ def test_el_mapeo_de_conversacion_no_se_deja_ninguna_columna():
         assert getattr(conv, campo.name) == fila[campo.name], (
             f"el mapeo no lee {campo.name}"
         )
+
+
+def test_vector_credencial_vocero_080():
+    from app.multiorg import credencial_derivada
+
+    assert credencial_derivada("secreto-gemelo-080", "org_demo") == "S4-VLffcFRxJjd_c_SVyYW7p0IBrhImZRG1pCIPv8GE"
+
+
+async def test_vocero_080_id_inmutable_en_crm_y_llm():
+    reg = RegistroDeOrganizaciones("http://crm", SECRETO, id_en_cabecera=True)
+    try:
+        cliente = reg.cliente(ORG, "negocio")
+        assert cliente is reg.cliente(ORG, "otro-slug")
+        assert cliente._http.headers["X-Vocero-Organization"] == ORG
+        ia = reg.llm(ORG, "negocio", {"model": "modelo"}, Settings())
+        assert ia is reg.llm(ORG, "otro-slug", {"model": "modelo"}, Settings())
+        assert ia._client.default_headers["X-Vocero-Organization"] == ORG
+        async with reg.http_de_ensayo(ORG, "negocio", "ficha") as ensayo_http:
+            assert ensayo_http.headers["X-Vocero-Organization"] == ORG
+        ensayo_ia = reg.llm_de_ensayo(ORG, "negocio", {"model": "modelo"}, Settings(), "ficha")
+        assert ensayo_ia._client.default_headers["X-Vocero-Organization"] == ORG
+    finally:
+        await reg.aclose()
+
+
+async def test_vocero_080_reintenta_precarga_y_conserva_ruta_de_etapa():
+    import httpx
+    from app.crm_brains import BrainsCrmClient
+
+    rutas = []
+    estados = iter([429, 503, 200, 200])
+
+    async def responder(request):
+        rutas.append(request.url.path)
+        return httpx.Response(next(estados), json={})
+
+    async with httpx.AsyncClient(base_url="http://crm", transport=httpx.MockTransport(responder)) as http:
+        cliente = BrainsCrmClient("http://crm", SECRETO, ORG, client=http)
+        assert await cliente.precargar("cv_prueba") == {}
+        await cliente._request("POST", "/api/bot/stage", json={"stage": "Nuevo"})
+    assert rutas == ["/api/brains/context"] * 3 + ["/api/brains/stage"]

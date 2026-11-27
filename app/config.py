@@ -221,6 +221,7 @@ class Settings(BaseSettings):
     # que llega y autentica lo que sale: el mismo secreto en las dos
     # direcciones, como en el contrato.
     crm_brain_secret: str = ""
+    brain_deployment_secret: str = ""
 
     # Slug de la organización. Solo se usa para acompañar al secreto; el CRM
     # verifica que coincidan, así que no sirve de nada acertar uno sin el otro.
@@ -314,6 +315,8 @@ class Settings(BaseSettings):
         cerebro en cloud, la llave de `/api/bot/*` contra la raíz. Así no hay
         un secreto más que copiar entre los dos.
         """
+        if self.multi_org and self.brain_deployment_secret:
+            return self.brain_deployment_secret
         return self.crm_brain_secret if self.cloud_mode else self.crm_bot_api_key
 
     @staticmethod

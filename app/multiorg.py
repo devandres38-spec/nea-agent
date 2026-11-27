@@ -96,11 +96,13 @@ class RegistroDeOrganizaciones:
         *,
         nombre_por_defecto: str = "Nea",
         brief_path: str | None = None,
+        id_en_cabecera: bool = False,
     ) -> None:
         self._base_url = base_url
         self._secreto = secreto_despliegue
         self._nombre = nombre_por_defecto
         self._brief = brief_path
+        self._id_en_cabecera = id_en_cabecera
         self._clientes: dict[str, BrainsCrmClient] = {}
         self._perfiles: dict[str, ProfileProvider] = {}
         # Cacheados por la tupla completa y no por organizacion: si el miembro
@@ -114,7 +116,7 @@ class RegistroDeOrganizaciones:
             cliente = BrainsCrmClient(
                 self._base_url,
                 credencial_derivada(self._secreto, organization_id),
-                slug,
+                organization_id if self._id_en_cabecera else slug,
             )
             self._clientes[organization_id] = cliente
             logger.info(
@@ -167,7 +169,7 @@ class RegistroDeOrganizaciones:
         model = str(config.get("model") or por_defecto.llm_model)
         transcribe = str(config.get("transcribeModel") or "")
         credencial = credencial_derivada(self._secreto, organization_id)
-        clave = (credencial, model, transcribe, base_url)
+        clave = (organization_id, model, transcribe, base_url)
         cliente = self._llms.get(clave)
         if cliente is None:
             cliente = OpenAiLlm(
@@ -175,7 +177,7 @@ class RegistroDeOrganizaciones:
                 model,
                 transcribe_model=transcribe,
                 base_url=base_url,
-                default_headers={"X-Vocero-Organization": slug},
+                default_headers={"X-Vocero-Organization": organization_id if self._id_en_cabecera else slug},
                 # Los ajustes de velocidad son de esta Nea, no del miembro:
                 # el CRM reenvia el cuerpo TAL CUAL, asi que `extra_body`
                 # llega al proveedor igual que en mono-organizacion.
@@ -203,7 +205,7 @@ class RegistroDeOrganizaciones:
             base_url=self._base_url.rstrip("/"),
             headers={
                 "Authorization": f"Bearer {credencial_derivada(self._secreto, organization_id)}",
-                "X-Vocero-Organization": slug,
+                "X-Vocero-Organization": organization_id if self._id_en_cabecera else slug,
                 "X-Vocero-Ensayo": ficha,
             },
             timeout=15.0,
@@ -232,7 +234,10 @@ class RegistroDeOrganizaciones:
             # Un ensayo es de texto: no transcribe.
             transcribe_model="",
             base_url=base_url,
-            default_headers={"X-Vocero-Organization": slug, "X-Vocero-Ensayo": ficha},
+            default_headers={
+                "X-Vocero-Organization": organization_id if self._id_en_cabecera else slug,
+                "X-Vocero-Ensayo": ficha,
+            },
             reasoning_effort=por_defecto.llm_reasoning_effort,
             provider_sort=por_defecto.llm_provider_sort,
             timeout=por_defecto.llm_timeout_seconds,

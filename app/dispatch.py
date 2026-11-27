@@ -27,6 +27,7 @@ from typing import Any
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
+from app.crm_brains import OrganizacionSuspendida
 from app.atencion_humana import atencion_del_despacho
 from app.multiorg import organizacion_del_despacho
 from app.http_limits import limited_body
@@ -303,7 +304,10 @@ async def _procesar(ctx: AppContext, payload: dict[str, Any], *, durable: bool =
             mensajes = nuevos
 
     if ctx.settings.multi_org:
-        ctx_turno = await _contexto_multiorg(ctx, payload, identity, conversation_id)
+        try:
+            ctx_turno = await _contexto_multiorg(ctx, payload, identity, conversation_id)
+        except OrganizacionSuspendida:
+            return
         if ctx_turno is None:
             return  # el motivo ya quedó en el log, y la conversación con humano
     else:
