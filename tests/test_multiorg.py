@@ -426,6 +426,10 @@ async def test_vocero_080_id_inmutable_en_crm_y_llm():
         ia = reg.llm(ORG, "negocio", {"model": "modelo"}, Settings())
         assert ia is reg.llm(ORG, "otro-slug", {"model": "modelo"}, Settings())
         assert ia._client.default_headers["X-Vocero-Organization"] == ORG
+        async with reg.http_de_ensayo(ORG, "negocio", "ficha") as ensayo_http:
+            assert ensayo_http.headers["X-Vocero-Organization"] == ORG
+        ensayo_ia = reg.llm_de_ensayo(ORG, "negocio", {"model": "modelo"}, Settings(), "ficha")
+        assert ensayo_ia._client.default_headers["X-Vocero-Organization"] == ORG
     finally:
         await reg.aclose()
 

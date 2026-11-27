@@ -205,7 +205,7 @@ class RegistroDeOrganizaciones:
             base_url=self._base_url.rstrip("/"),
             headers={
                 "Authorization": f"Bearer {credencial_derivada(self._secreto, organization_id)}",
-                "X-Vocero-Organization": slug,
+                "X-Vocero-Organization": organization_id if self._id_en_cabecera else slug,
                 "X-Vocero-Ensayo": ficha,
             },
             timeout=15.0,
@@ -234,7 +234,10 @@ class RegistroDeOrganizaciones:
             # Un ensayo es de texto: no transcribe.
             transcribe_model="",
             base_url=base_url,
-            default_headers={"X-Vocero-Organization": slug, "X-Vocero-Ensayo": ficha},
+            default_headers={
+                "X-Vocero-Organization": organization_id if self._id_en_cabecera else slug,
+                "X-Vocero-Ensayo": ficha,
+            },
             reasoning_effort=por_defecto.llm_reasoning_effort,
             provider_sort=por_defecto.llm_provider_sort,
             timeout=por_defecto.llm_timeout_seconds,
